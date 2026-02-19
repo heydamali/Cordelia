@@ -1,6 +1,6 @@
-# EA Agent
+# Cordelia
 
-Personal executive-assistant agent powered by Gmail and LLMs.
+Personal AI assistant powered by Gmail and LLMs.
 
 ---
 
