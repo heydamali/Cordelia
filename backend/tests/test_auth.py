@@ -159,3 +159,55 @@ def test_callback_no_refresh_token(client):
 
     assert resp.status_code == 400
     assert "refresh token" in resp.json()["detail"].lower()
+
+
+# ── Watch registration during OAuth callback ──────────────────────────────────
+
+
+def _mock_watch_registration(history_id="99999", expiration_ms=9999999999000):
+    from app.services.gmail_connector import WatchRegistration
+    return WatchRegistration(history_id=history_id, expiration_ms=expiration_ms)
+
+
+def test_callback_registers_watch_and_stores_history_id(client, db_session):
+    flow = _mock_flow_with_credentials(refresh_token="refresh-watch")
+    service = _mock_build(email="watch@example.com", google_id="g_watch")
+    reg = _mock_watch_registration(history_id="12345")
+
+    mock_connector = MagicMock()
+    mock_connector.register_watch.return_value = reg
+
+    with (
+        patch("app.api.auth._create_flow", return_value=flow),
+        patch("app.api.auth.build", return_value=service),
+        patch("app.api.auth.GmailConnector", return_value=mock_connector),
+    ):
+        resp = client.get("/auth/google/callback", params={"code": "fake"})
+
+    assert resp.status_code == 200
+    user = db_session.query(User).filter(User.email == "watch@example.com").first()
+    assert user.gmail_history_id == "12345"
+    assert user.gmail_watch_expiry is not None
+
+
+def test_callback_watch_failure_does_not_fail_oauth(client, db_session):
+    from app.services.gmail_connector import GmailAPIError
+
+    flow = _mock_flow_with_credentials(refresh_token="refresh-watchfail")
+    service = _mock_build(email="watchfail@example.com", google_id="g_watchfail")
+
+    mock_connector = MagicMock()
+    mock_connector.register_watch.side_effect = GmailAPIError(403, "forbidden")
+
+    with (
+        patch("app.api.auth._create_flow", return_value=flow),
+        patch("app.api.auth.build", return_value=service),
+        patch("app.api.auth.GmailConnector", return_value=mock_connector),
+    ):
+        resp = client.get("/auth/google/callback", params={"code": "fake"})
+
+    # OAuth must still succeed even when watch registration fails
+    assert resp.status_code == 200
+    user = db_session.query(User).filter(User.email == "watchfail@example.com").first()
+    assert user is not None
+    assert user.gmail_history_id is None

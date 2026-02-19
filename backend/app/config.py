@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_SECRET: str
     GOOGLE_REDIRECT_URI: str = "http://localhost:8000/auth/google/callback"
     ENCRYPTION_KEY: str
+    GCP_PROJECT_ID: str
+    PUBSUB_TOPIC: str
+    PUBSUB_VERIFICATION_TOKEN: str
 
 
 settings = Settings()

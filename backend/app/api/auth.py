@@ -1,3 +1,6 @@
+import logging
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
 from google_auth_oauthlib.flow import Flow
@@ -7,12 +10,14 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
 from app.models.user import User
+from app.services.gmail_connector import GmailConnector, GmailAuthError, GmailAPIError
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/userinfo.email",
     "https://www.googleapis.com/auth/userinfo.profile",
     "openid",
@@ -77,6 +82,16 @@ def auth_google_callback(code: str, db: Session = Depends(get_db)):
     user.set_refresh_token(credentials.refresh_token)
     db.commit()
     db.refresh(user)
+
+    try:
+        connector = GmailConnector(user=user)
+        reg = connector.register_watch(topic_name=settings.PUBSUB_TOPIC)
+        user.gmail_history_id = reg.history_id
+        user.gmail_watch_expiry = datetime.fromtimestamp(reg.expiration_ms / 1000, tz=timezone.utc)
+        db.commit()
+    except (GmailAuthError, GmailAPIError) as exc:
+        logger.warning("failed to register watch for user %s: %s", user.id, exc)
+        # Don't fail the OAuth flow — Beat will renew it
 
     return {
         "message": "Google OAuth successful",

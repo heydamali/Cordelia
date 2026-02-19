@@ -18,6 +18,9 @@ os.environ.setdefault("GOOGLE_CLIENT_ID", "test-client-id")
 os.environ.setdefault("GOOGLE_CLIENT_SECRET", "test-client-secret")
 os.environ.setdefault("GOOGLE_REDIRECT_URI", "http://localhost:8000/auth/google/callback")
 os.environ.setdefault("ENCRYPTION_KEY", _test_key)
+os.environ.setdefault("GCP_PROJECT_ID", "test-project")
+os.environ.setdefault("PUBSUB_TOPIC", "projects/test-project/topics/gmail-push")
+os.environ.setdefault("PUBSUB_VERIFICATION_TOKEN", "test-verification-token")
 
 # --- Now it's safe to import app modules ---------------------------------
 import pytest

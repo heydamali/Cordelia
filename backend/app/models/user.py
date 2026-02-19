@@ -29,6 +29,8 @@ class User(Base):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
+    gmail_history_id: Mapped[str | None] = mapped_column(String(50), nullable=True, default=None)
+    gmail_watch_expiry: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
 
     def set_refresh_token(self, plain_token: str) -> None:
         self.encrypted_refresh_token = _fernet.encrypt(plain_token.encode()).decode()
