@@ -1,6 +1,8 @@
 # Cordelia
 
-Personal AI assistant powered by Gmail and LLMs.
+Personal AI assistant powered by your inbox and LLMs.
+
+Cordelia connects to everywhere information reaches you — email, work apps, social media, and more — and acts as the executive assistant you never had.
 
 ---
 
