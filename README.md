@@ -15,10 +15,59 @@ Gmail ──push──▶ Google Pub/Sub ──HTTP POST──▶ /webhooks/gmai
                                                      │
                                          fetch thread via Gmail API
                                                      │
-                                              log (storage TBD)
+                                          POST /ingest (internal)
+                                                     │
+                                   upsert conversations + messages
+                                        (PostgreSQL storage)
+                                                     │
+                                           LLM processing (next)
 ```
 
 **Stack:** FastAPI · PostgreSQL · Redis · Celery · Google OAuth2 · Gmail API · Google Pub/Sub
+
+---
+
+## What's Built
+
+### Connector pipeline (Gmail → DB)
+- Gmail push notifications arrive via Google Pub/Sub → `/webhooks/gmail`
+- A Celery task fetches the full thread from the Gmail API
+- The thread is normalised and written to PostgreSQL via the ingest service
+- Duplicate notifications are handled safely — same message is never stored twice
+- Gmail watches are renewed automatically every 6 days via Celery Beat
+
+### Storage layer
+Two tables store all messages regardless of source:
+
+| Table | Purpose |
+|---|---|
+| `conversations` | One row per thread/chat — holds subject, snippet, last message time |
+| `messages` | One row per individual message — sender, body, metadata |
+
+The schema is source-agnostic: `source` + `source_id` columns mean WhatsApp, Telegram, etc. can plug in without schema changes.
+
+### Ingest API (`POST /ingest`)
+An internal HTTP endpoint that any connector service can call to write normalised messages into the storage layer. Authenticated via a shared `X-Ingest-Key` header.
+
+```bash
+curl -X POST http://localhost:8000/ingest \
+  -H "X-Ingest-Key: <INGEST_API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source": "gmail",
+    "user_id": "<user-id>",
+    "conversation_source_id": "<thread-id>",
+    "subject": "Hello",
+    "messages": [{
+      "source_id": "<message-id>",
+      "sender_name": "Alice",
+      "sender_handle": "alice@example.com",
+      "body_text": "Hi there",
+      "sent_at": "2026-02-19T10:00:00Z",
+      "is_from_user": false
+    }]
+  }'
+```
 
 ---
 
@@ -71,6 +120,7 @@ Fill in each value:
 | `GCP_PROJECT_ID` | Google Cloud Console → project selector (e.g. `my-project-123456`) |
 | `PUBSUB_TOPIC` | `projects/<GCP_PROJECT_ID>/topics/gmail-push` (create the topic first, see step 5) |
 | `PUBSUB_VERIFICATION_TOKEN` | `python3 -c "import secrets; print(secrets.token_urlsafe(32))"` — pick any long random string |
+| `INGEST_API_KEY` | `python3 -c "import secrets; print(secrets.token_urlsafe(32))"` — shared secret for the ingest endpoint |
 
 ### 4. Run database migrations
 
@@ -78,6 +128,8 @@ Fill in each value:
 cd backend
 alembic upgrade head
 ```
+
+This creates three tables: `users`, `conversations`, `messages`.
 
 ### 5. Google Cloud one-time setup
 
@@ -121,18 +173,21 @@ ngrok http 8000
 
 After ngrok starts, update the Pub/Sub subscription push endpoint with the new URL (see step 5 above).
 
+> **Note:** Always restart the Celery worker after code changes — it does not hot-reload like the API server.
+
 ---
 
 ## API Endpoints
 
-| Method | URL | Description |
-|---|---|---|
-| GET | `/health` | Health check |
-| GET | `/auth/google` | Start Google OAuth flow |
-| GET | `/auth/google/callback?code=<code>` | OAuth callback — creates/updates user, registers Gmail watch |
-| GET | `/gmail/threads?user_id=<id>` | List inbox threads (paginated, 20/page) |
-| GET | `/gmail/threads/{thread_id}?user_id=<id>` | Fetch full thread with all messages |
-| POST | `/webhooks/gmail?token=<secret>` | Gmail push notification receiver (called by Pub/Sub) |
+| Method | URL | Auth | Description |
+|---|---|---|---|
+| GET | `/health` | None | Health check |
+| GET | `/auth/google` | None | Start Google OAuth flow |
+| GET | `/auth/google/callback?code=<code>` | None | OAuth callback — creates/updates user, registers Gmail watch |
+| GET | `/gmail/threads?user_id=<id>` | None | List inbox threads (paginated, 20/page) |
+| GET | `/gmail/threads/{thread_id}?user_id=<id>` | None | Fetch full thread with all messages |
+| POST | `/webhooks/gmail?token=<secret>` | Pub/Sub token | Gmail push notification receiver |
+| POST | `/ingest` | `X-Ingest-Key` header | Write normalised messages from any connector |
 
 ### Gmail query examples
 
@@ -141,6 +196,18 @@ After ngrok starts, update the Pub/Sub subscription push endpoint with the new U
 | Primary tab only | `/gmail/threads?user_id=<id>&q=category:primary` |
 | Unread only | `/gmail/threads?user_id=<id>&q=is:unread` |
 | From a specific sender | `/gmail/threads?user_id=<id>&q=from:someone@example.com` |
+
+### Verify what's stored
+
+```sql
+-- Connect: psql postgresql://ea_agent:ea_agent_secret@localhost:5432/ea_agent_db
+
+SELECT source, subject, snippet, last_message_at FROM conversations ORDER BY last_message_at DESC;
+
+SELECT c.subject, m.sender_handle, left(m.body_text, 80), m.sent_at
+FROM messages m JOIN conversations c ON m.conversation_id = c.id
+ORDER BY m.sent_at DESC;
+```
 
 ---
 
@@ -156,23 +223,27 @@ Tests use in-memory SQLite — no PostgreSQL or Redis needed.
 
 ---
 
-## Where to Continue
+## Current State
 
-### Current state (as of last commit)
-- OAuth flow works end-to-end ✅
-- Gmail watch is registered on login and renewed every 6 days via Celery Beat ✅
-- Pub/Sub push notifications arrive at `/webhooks/gmail`, enqueue a Celery task ✅
-- Task fetches the new thread via Gmail API and **logs it** ✅
-- **No storage** — fetched threads are not persisted anywhere yet
+| Capability | Status |
+|---|---|
+| Google OAuth login | ✅ |
+| Gmail watch registration + auto-renewal | ✅ |
+| Real-time push notifications via Pub/Sub | ✅ |
+| Fetch threads from Gmail API | ✅ |
+| Persist conversations + messages to PostgreSQL | ✅ |
+| Idempotent ingest (safe to re-process) | ✅ |
+| Source-agnostic ingest API | ✅ |
+| LLM processing | Next |
+| Additional connectors (WhatsApp, Telegram) | Future |
+| Frontend / agent interface | Future |
 
-### Next steps
+## Next Steps
 
-1. **Thread storage model** — create an `emails` (or `threads`) table to persist fetched threads and messages. Add an Alembic migration.
+1. **LLM processing** — pipe stored messages through the Anthropic API to extract tasks, priorities, draft replies, and summaries.
 
-2. **Idempotency** — before inserting a thread, check if it already exists (Gmail can deliver the same notification more than once).
+2. **Redis lock for historyId race condition** — two simultaneous notifications for the same user both use the same `start_history_id` cursor. Add a Redis lock in `process_gmail_notification` to serialise processing per user.
 
-3. **LLM processing** — once threads are stored, pipe them through the Anthropic API (`app/services/llm_processor.py` is already stubbed out) to extract tasks, priorities, draft replies, etc.
+3. **Additional connectors** — WhatsApp, Telegram, Instagram etc. can call `POST /ingest` directly with their own `source` value. No schema changes needed.
 
-4. **Redis lock for historyId race condition** — two simultaneous notifications for the same user both use the same `start_history_id` cursor. Add a Redis lock in `process_gmail_notification` to serialize processing per user.
-
-5. **Frontend / agent interface** — surface the processed emails to the user.
+4. **Frontend / agent interface** — surface processed messages to the user.
