@@ -8,6 +8,7 @@ from app.database import get_db
 from app.models.message import Message
 from app.schemas.ingest import IngestRequestSchema
 from app.services.ingest_service import ingest
+from app.tasks.llm_tasks import process_conversation_with_llm
 
 router = APIRouter(tags=["ingest"])
 
@@ -29,6 +30,8 @@ def ingest_endpoint(
         conversation = ingest(db, payload)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+
+    process_conversation_with_llm.delay(conversation.id, payload.user_id)
 
     messages_stored = (
         db.query(Message).filter(Message.conversation_id == conversation.id).count()

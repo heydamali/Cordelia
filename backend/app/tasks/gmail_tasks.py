@@ -17,6 +17,7 @@ from app.services.gmail_connector import (
     GmailAPIError,
 )
 from app.services.ingest_service import ingest
+from app.tasks.llm_tasks import process_conversation_with_llm
 
 logger = logging.getLogger(__name__)
 
@@ -83,13 +84,14 @@ def process_gmail_notification(self, user_id: str, notification_history_id: str)
                             for msg in thread.messages
                         ],
                     )
-                    ingest(db, payload)
+                    conversation = ingest(db, payload)
                     logger.info(
                         "stored thread %s for user %s (%d messages)",
                         thread.thread_id,
                         user_id,
                         len(thread.messages),
                     )
+                    process_conversation_with_llm.delay(conversation.id, user_id)
                 except (GmailAuthError, GmailAPIError) as exc:
                     logger.warning(
                         "process_gmail_notification: failed to fetch thread %s for user %s: %s",

@@ -20,10 +20,16 @@ Gmail ──push──▶ Google Pub/Sub ──HTTP POST──▶ /webhooks/gmai
                                    upsert conversations + messages
                                         (PostgreSQL storage)
                                                      │
-                                           LLM processing (next)
+                              process_conversation_with_llm.delay()
+                                                     │
+                                    [Celery worker — async]
+                                                     │
+                                  claude-haiku-4-5 (Anthropic API)
+                                                     │
+                                    upsert tasks table (PostgreSQL)
 ```
 
-**Stack:** FastAPI · PostgreSQL · Redis · Celery · Google OAuth2 · Gmail API · Google Pub/Sub
+**Stack:** FastAPI · PostgreSQL · Redis · Celery · Google OAuth2 · Gmail API · Google Pub/Sub · Anthropic API
 
 ---
 
@@ -37,14 +43,26 @@ Gmail ──push──▶ Google Pub/Sub ──HTTP POST──▶ /webhooks/gmai
 - Gmail watches are renewed automatically every 6 days via Celery Beat
 
 ### Storage layer
-Two tables store all messages regardless of source:
+Three tables store all data:
 
 | Table | Purpose |
 |---|---|
 | `conversations` | One row per thread/chat — holds subject, snippet, last message time |
 | `messages` | One row per individual message — sender, body, metadata |
+| `tasks` | One row per extracted task — title, category, priority, status, LLM output |
 
 The schema is source-agnostic: `source` + `source_id` columns mean WhatsApp, Telegram, etc. can plug in without schema changes.
+
+### LLM processing layer
+After every ingest (from Gmail push or `POST /ingest`), a second Celery task is queued asynchronously:
+
+- Loads the conversation + messages from PostgreSQL
+- Sends them to `claude-haiku-4-5-20251001` with a structured prompt
+- Extracts a list of tasks: `reply`, `appointment`, `action`, `info`, or `ignored`
+- Upserts tasks idempotently — priority only bumps up for pending tasks, done/snoozed tasks are not re-opened, ignored tasks are never re-touched
+- Passes existing `task_key` values to the LLM for deduplication across follow-up emails
+
+Failures are handled cleanly: transient API errors retry up to 3 times; JSON parse failures are dropped (logged, no retry).
 
 ### Ingest API (`POST /ingest`)
 An internal HTTP endpoint that any connector service can call to write normalised messages into the storage layer. Authenticated via a shared `X-Ingest-Key` header.
@@ -129,7 +147,7 @@ cd backend
 alembic upgrade head
 ```
 
-This creates three tables: `users`, `conversations`, `messages`.
+This creates four tables: `users`, `conversations`, `messages`, `tasks`.
 
 ### 5. Google Cloud one-time setup
 
@@ -223,6 +241,32 @@ Tests use in-memory SQLite — no PostgreSQL or Redis needed.
 
 ---
 
+## Verify tasks in DB
+
+```sql
+-- Connect: psql postgresql://ea_agent:ea_agent_secret@localhost:5432/ea_agent_db
+
+SELECT title, category, priority, status, summary
+FROM tasks
+ORDER BY created_at DESC;
+```
+
+Or with Python:
+
+```bash
+python3 - << 'EOF'
+from app.database import engine
+from sqlalchemy import text
+with engine.connect() as conn:
+    for row in conn.execute(text(
+        "SELECT title, category, priority, status, summary FROM tasks ORDER BY created_at DESC"
+    )):
+        print(dict(row._mapping))
+EOF
+```
+
+---
+
 ## Current State
 
 | Capability | Status |
@@ -234,16 +278,22 @@ Tests use in-memory SQLite — no PostgreSQL or Redis needed.
 | Persist conversations + messages to PostgreSQL | ✅ |
 | Idempotent ingest (safe to re-process) | ✅ |
 | Source-agnostic ingest API | ✅ |
-| LLM processing | Next |
+| LLM task extraction (Haiku, async Celery) | ✅ |
+| Idempotent task upsert with priority rules | ✅ |
 | Additional connectors (WhatsApp, Telegram) | Future |
-| Frontend / agent interface | Future |
+| Mobile app / API to serve tasks | Next |
+| Redis lock for historyId race condition | Next |
 
 ## Next Steps
 
-1. **LLM processing** — pipe stored messages through the Anthropic API to extract tasks, priorities, draft replies, and summaries.
+1. **Mobile app API** — expose `GET /tasks?user_id=<id>` (with filtering by status/priority) so the Cordelia iOS app can display the task list. Also needs `PATCH /tasks/<id>` to mark tasks as done, snoozed, or ignored.
 
-2. **Redis lock for historyId race condition** — two simultaneous notifications for the same user both use the same `start_history_id` cursor. Add a Redis lock in `process_gmail_notification` to serialise processing per user.
+2. **Redis lock for historyId race condition** — two simultaneous Gmail push notifications for the same user will both use the same `start_history_id` cursor, potentially processing the same thread twice. Add a Redis distributed lock in `process_gmail_notification` to serialise per-user processing.
 
-3. **Additional connectors** — WhatsApp, Telegram, Instagram etc. can call `POST /ingest` directly with their own `source` value. No schema changes needed.
+3. **Task status feedback loop** — when a user marks a task `done` or `snoozed` in the app, that status should survive subsequent LLM re-runs (already implemented in the upsert rules) and optionally trigger a follow-up action (e.g. draft a reply).
 
-4. **Frontend / agent interface** — surface processed messages to the user.
+4. **LLM prompt tuning** — review real task output in the DB and iterate on the system prompt: category boundaries, priority thresholds, `task_key` slug quality, handling of long threads.
+
+5. **Additional connectors** — WhatsApp, Telegram, Instagram etc. can call `POST /ingest` directly with their own `source` value. No schema changes needed.
+
+6. **`due_at` extraction quality** — the LLM currently outputs ISO-8601 strings for `due_at`; consider adding the current date to the prompt context so relative references ("Thursday", "next week") resolve correctly.

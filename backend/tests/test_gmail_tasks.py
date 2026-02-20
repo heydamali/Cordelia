@@ -4,6 +4,7 @@ Task functions create and close their own DB sessions, so we mock
 the session entirely rather than passing the test db_session.
 """
 
+import contextlib
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
@@ -63,17 +64,20 @@ def _make_thread_detail(thread_id: str = "t1") -> ThreadDetail:
 class TestProcessGmailNotification:
     def _run(self, user, connector=None, history_id="99999"):
         mock_db = _make_mock_db(user)
-        patches = [patch("app.tasks.gmail_tasks.SessionLocal", return_value=mock_db)]
-        if connector is not None:
-            patches.append(patch("app.tasks.gmail_tasks.GmailConnector", return_value=connector))
-
-        from app.tasks.gmail_tasks import process_gmail_notification
-        with patches[0]:
-            if len(patches) > 1:
-                with patches[1]:
-                    process_gmail_notification("user-1", history_id)
-            else:
-                process_gmail_notification("user-1", history_id)
+        # Always mock the LLM task dispatch to avoid broker connections in tests
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(
+                patch("app.tasks.gmail_tasks.SessionLocal", return_value=mock_db)
+            )
+            stack.enter_context(
+                patch("app.tasks.gmail_tasks.process_conversation_with_llm")
+            )
+            if connector is not None:
+                stack.enter_context(
+                    patch("app.tasks.gmail_tasks.GmailConnector", return_value=connector)
+                )
+            from app.tasks.gmail_tasks import process_gmail_notification
+            process_gmail_notification("user-1", history_id)
 
         return mock_db
 
@@ -99,7 +103,8 @@ class TestProcessGmailNotification:
         connector.list_history.assert_called_once_with(start_history_id="11111")
         assert connector.get_thread.call_count == 2
         assert user.gmail_history_id == "22222"
-        mock_db.commit.assert_called_once()
+        # ingest() commits once per thread (2) + cursor update commit (1) = 3 total
+        assert mock_db.commit.call_count == 3
 
     def test_404_triggers_re_registration(self):
         user = _make_mock_user(history_id="11111")

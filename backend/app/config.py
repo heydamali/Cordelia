@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     PUBSUB_TOPIC: str
     PUBSUB_VERIFICATION_TOKEN: str
     INGEST_API_KEY: str
+    ANTHROPIC_API_KEY: str
 
 
 settings = Settings()

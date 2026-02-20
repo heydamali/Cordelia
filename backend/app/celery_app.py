@@ -8,7 +8,7 @@ celery_app = Celery(
     "cordelia",
     broker=settings.REDIS_URL,
     backend=settings.REDIS_URL,
-    include=["app.tasks.gmail_tasks"],
+    include=["app.tasks.gmail_tasks", "app.tasks.llm_tasks"],
 )
 
 celery_app.conf.beat_schedule = {
