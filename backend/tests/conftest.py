@@ -21,6 +21,7 @@ os.environ.setdefault("ENCRYPTION_KEY", _test_key)
 os.environ.setdefault("GCP_PROJECT_ID", "test-project")
 os.environ.setdefault("PUBSUB_TOPIC", "projects/test-project/topics/gmail-push")
 os.environ.setdefault("PUBSUB_VERIFICATION_TOKEN", "test-verification-token")
+os.environ.setdefault("INGEST_API_KEY", "test-ingest-api-key")
 
 # --- Now it's safe to import app modules ---------------------------------
 import pytest

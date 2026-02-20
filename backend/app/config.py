@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     GCP_PROJECT_ID: str
     PUBSUB_TOPIC: str
     PUBSUB_VERIFICATION_TOKEN: str
+    INGEST_API_KEY: str
 
 
 settings = Settings()

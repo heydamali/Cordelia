@@ -10,11 +10,13 @@ from app.celery_app import celery_app
 from app.config import settings
 from app.database import SessionLocal
 from app.models.user import User
+from app.schemas.ingest import IngestMessageSchema, IngestRequestSchema
 from app.services.gmail_connector import (
     GmailConnector,
     GmailAuthError,
     GmailAPIError,
 )
+from app.services.ingest_service import ingest
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +60,28 @@ def process_gmail_notification(self, user_id: str, notification_history_id: str)
             for thread_id in record.thread_ids_added:
                 try:
                     thread = connector.get_thread(thread_id)
+                    payload = IngestRequestSchema(
+                        source="gmail",
+                        user_id=user_id,
+                        conversation_source_id=thread.thread_id,
+                        subject=thread.messages[0].subject if thread.messages else None,
+                        messages=[
+                            IngestMessageSchema(
+                                source_id=msg.message_id,
+                                sender_name=msg.sender.name,
+                                sender_handle=msg.sender.email,
+                                body_text=msg.body_plain,
+                                body_html=msg.body_html,
+                                sent_at=msg.date,
+                                is_from_user=False,
+                                raw_metadata={"labels": msg.labels},
+                            )
+                            for msg in thread.messages
+                        ],
+                    )
+                    ingest(db, payload)
                     logger.info(
-                        "fetched thread %s for user %s (messages: %d)",
+                        "stored thread %s for user %s (%d messages)",
                         thread.thread_id,
                         user_id,
                         len(thread.messages),
