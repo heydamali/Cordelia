@@ -56,8 +56,12 @@ def process_gmail_notification(self, user_id: str, notification_history_id: str)
             logger.error("process_gmail_notification: GmailAuthError for user %s: %s", user_id, exc)
             return
 
+        seen_thread_ids: set[str] = set()
         for record in result.records:
             for thread_id in record.thread_ids_added:
+                if thread_id in seen_thread_ids:
+                    continue
+                seen_thread_ids.add(thread_id)
                 try:
                     thread = connector.get_thread(thread_id)
                     payload = IngestRequestSchema(
