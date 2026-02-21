@@ -17,6 +17,9 @@ class TaskSchema(BaseModel):
     ignore_reason: str | None
     created_at: datetime
     updated_at: datetime
+    snoozed_until: datetime | None
+    notify_at: list
+    notifications_sent: list
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -28,3 +31,4 @@ class TaskListResponseSchema(BaseModel):
 
 class TaskStatusUpdateSchema(BaseModel):
     status: Literal["pending", "done", "snoozed", "ignored"]
+    snoozed_until: datetime | None = None

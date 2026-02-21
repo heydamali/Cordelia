@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
+import redis as redis_module
 from celery import shared_task
 from sqlalchemy.orm import Session
 
@@ -25,6 +26,13 @@ logger = logging.getLogger(__name__)
 @celery_app.task(bind=True, max_retries=3, name="app.tasks.gmail_tasks.process_gmail_notification")
 def process_gmail_notification(self, user_id: str, notification_history_id: str) -> None:
     """Fetch new threads for a user after receiving a Gmail push notification."""
+    _redis = redis_module.from_url(settings.REDIS_URL)
+    lock = _redis.lock(f"cordelia:gmail_lock:{user_id}", timeout=300)  # 5-min TTL
+
+    if not lock.acquire(blocking=False):
+        logger.info("lock held for user %s, skipping", user_id)
+        return
+
     db: Session = SessionLocal()
     try:
         user = db.query(User).filter(User.id == user_id).first()
@@ -104,6 +112,10 @@ def process_gmail_notification(self, user_id: str, notification_history_id: str)
         db.commit()
     finally:
         db.close()
+        try:
+            lock.release()
+        except Exception as exc:
+            logger.debug("could not release lock for user %s: %s", user_id, exc)
 
 
 @celery_app.task(name="app.tasks.gmail_tasks.renew_all_watches")

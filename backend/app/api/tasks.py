@@ -11,7 +11,7 @@ from app.schemas.tasks import TaskListResponseSchema, TaskSchema, TaskStatusUpda
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
-_VALID_STATUSES = {"pending", "done", "snoozed", "ignored", "all"}
+_VALID_STATUSES = {"pending", "done", "snoozed", "ignored", "all", "expired"}
 
 
 def _get_user(user_id: str, db: Session) -> User:
@@ -24,7 +24,7 @@ def _get_user(user_id: str, db: Session) -> User:
 @router.get("", response_model=TaskListResponseSchema)
 def list_tasks(
     user_id: str = Query(..., description="The authenticated user's ID"),
-    status: str = Query("pending", description="Filter by status: pending/done/snoozed/ignored/all"),
+    status: str = Query("pending", description="Filter by status: pending/done/snoozed/ignored/expired/all"),
     category: str | None = Query(None, description="Filter by category, e.g. reply, appointment"),
     priority: str | None = Query(None, description="Filter by priority: high/medium/low"),
     db: Session = Depends(get_db),
@@ -78,6 +78,12 @@ def update_task_status(
 
     task.status = body.status
     task.updated_at = datetime.now(timezone.utc)
+
+    if body.status == "snoozed" and body.snoozed_until is not None:
+        task.snoozed_until = body.snoozed_until
+    elif body.status != "snoozed":
+        task.snoozed_until = None   # clear when transitioning away from snoozed
+
     db.commit()
     db.refresh(task)
 

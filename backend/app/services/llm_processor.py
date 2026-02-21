@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 import anthropic
@@ -38,13 +39,22 @@ DEDUPLICATION:
 
 CATEGORIES: reply | appointment | action | info | ignored
 
-OUTPUT FORMAT (raw JSON only, no markdown):
-{"tasks": [{"task_key": "reply-john-thursday", "title": "Reply to John about Thursday meeting", "category": "reply", "priority": "high", "summary": "John asked about the Thursday meeting agenda and needs a response.", "due_at": null, "ignore_reason": null}]}
+NOTIFY_AT:
+- Set 0–3 ISO-8601 UTC reminder datetimes for each non-ignored task, based on task context and deadline
+- Use TODAY (provided at the top of the user message) to resolve relative dates
+- Choose timing based on task urgency: for high-priority tasks with near deadlines, notify sooner; for low-priority tasks, space reminders further apart
+- Prefer working hours (08:00–18:00 UTC) unless the task is time-critical
+- Ignored tasks must always have notify_at: []
+- Examples: task due in 3 days → ["<tomorrow 09:00 UTC>", "<day-before 08:00 UTC>"]; task due in 1 week → ["<3 days before 09:00 UTC>", "<1 day before 09:00 UTC>"]
 
-For ignored emails include: {"task_key": "ignore-newsletter-acme", "title": "Newsletter from Acme Corp", "category": "ignored", "priority": "low", "summary": null, "due_at": null, "ignore_reason": "Automated promotional newsletter"}
+OUTPUT FORMAT (raw JSON only, no markdown):
+{"tasks": [{"task_key": "reply-john-thursday", "title": "Reply to John about Thursday meeting", "category": "reply", "priority": "high", "summary": "John asked about the Thursday meeting agenda and needs a response.", "due_at": null, "ignore_reason": null, "notify_at": ["2026-02-25T08:00:00Z"]}]}
+
+For ignored emails include: {"task_key": "ignore-newsletter-acme", "title": "Newsletter from Acme Corp", "category": "ignored", "priority": "low", "summary": null, "due_at": null, "ignore_reason": "Automated promotional newsletter", "notify_at": []}
 
 task_key must be a short hyphenated slug like "reply-john-thursday" or "schedule-dentist-appointment".
-due_at must be ISO-8601 string or null."""
+due_at must be ISO-8601 string or null.
+notify_at must be a JSON array of ISO-8601 UTC datetime strings (0–3 items)."""
 
 
 class LLMTask(BaseModel):
@@ -55,6 +65,7 @@ class LLMTask(BaseModel):
     summary: str | None = None
     due_at: str | None = None     # ISO-8601 string; parsed in task_engine
     ignore_reason: str | None = None
+    notify_at: list[str] = []
 
 
 class LLMResponse(BaseModel):
@@ -67,6 +78,7 @@ def build_prompt(
     existing_task_keys: list[str],
 ) -> str:
     lines: list[str] = []
+    lines.append(f"TODAY: {datetime.now(timezone.utc).date().isoformat()}")
     lines.append(f"SUBJECT: {conversation.subject or '(no subject)'}")
     lines.append(f"SOURCE: {conversation.source}")
     lines.append(

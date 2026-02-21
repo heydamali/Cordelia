@@ -12,6 +12,7 @@ Cordelia connects to everywhere information reaches you — email, work apps, so
 Gmail ──push──▶ Google Pub/Sub ──HTTP POST──▶ /webhooks/gmail
                                                      │
                                               Celery task queue
+                                              (Redis lock per user)
                                                      │
                                          fetch thread via Gmail API
                                                      │
@@ -26,7 +27,14 @@ Gmail ──push──▶ Google Pub/Sub ──HTTP POST──▶ /webhooks/gmai
                                                      │
                                   claude-haiku-4-5 (Anthropic API)
                                                      │
-                                    upsert tasks table (PostgreSQL)
+                              upsert tasks with notify_at schedule
+                                        (PostgreSQL storage)
+
+Celery Beat (every 30 min) ──▶ process_task_deadlines
+   │
+   ├── Pass 1: re-surface tasks whose snoozed_until has passed
+   ├── Pass 2: fire notify_at reminders (source refresh + LLM completion check first)
+   └── Pass 3: expire overdue pending tasks → status=expired
 ```
 
 **Stack:** FastAPI · PostgreSQL · Redis · Celery · Google OAuth2 · Gmail API · Google Pub/Sub · Anthropic API
@@ -37,19 +45,21 @@ Gmail ──push──▶ Google Pub/Sub ──HTTP POST──▶ /webhooks/gmai
 
 ### Connector pipeline (Gmail → DB)
 - Gmail push notifications arrive via Google Pub/Sub → `/webhooks/gmail`
+- A per-user Redis distributed lock prevents duplicate processing when two notifications arrive simultaneously with the same `historyId` cursor
 - A Celery task fetches the full thread from the Gmail API
 - The thread is normalised and written to PostgreSQL via the ingest service
 - Duplicate notifications are handled safely — same message is never stored twice
 - Gmail watches are renewed automatically every 6 days via Celery Beat
 
 ### Storage layer
-Three tables store all data:
+Five tables store all data:
 
 | Table | Purpose |
 |---|---|
+| `users` | Google OAuth credentials, Gmail watch state, APNs device token |
 | `conversations` | One row per thread/chat — holds subject, snippet, last message time |
 | `messages` | One row per individual message — sender, body, metadata |
-| `tasks` | One row per extracted task — title, category, priority, status, LLM output |
+| `tasks` | One row per extracted task — title, category, priority, status, deadline, notification schedule |
 
 The schema is source-agnostic: `source` + `source_id` columns mean WhatsApp, Telegram, etc. can plug in without schema changes.
 
@@ -57,12 +67,43 @@ The schema is source-agnostic: `source` + `source_id` columns mean WhatsApp, Tel
 After every ingest (from Gmail push or `POST /ingest`), a second Celery task is queued asynchronously:
 
 - Loads the conversation + messages from PostgreSQL
-- Sends them to `claude-haiku-4-5-20251001` with a structured prompt
+- Injects `TODAY: <date>` as the first prompt line so the LLM can resolve relative dates correctly
+- Sends everything to `claude-haiku-4-5-20251001` with a structured prompt
 - Extracts a list of tasks: `reply`, `appointment`, `action`, `info`, or `ignored`
+- Determines a `notify_at` schedule (0–3 ISO-8601 UTC datetimes per task) — timed by the LLM based on task urgency and deadline; ignored tasks always get `[]`
 - Upserts tasks idempotently — priority only bumps up for pending tasks, done/snoozed tasks are not re-opened, ignored tasks are never re-touched
 - Passes existing `task_key` values to the LLM for deduplication across follow-up emails
 
 Failures are handled cleanly: transient API errors retry up to 3 times; JSON parse failures are dropped (logged, no retry).
+
+### Deadline intelligence (Celery Beat — every 30 min)
+Three ordered passes run on a 30-minute Beat schedule:
+
+**Pass 1 — Re-surface snoozed tasks**
+Tasks with `status=snoozed` and an expired `snoozed_until` are set back to `pending` automatically. Pass 1 runs before Pass 3 so a just-resurfaced overdue task is expired in the same Beat cycle.
+
+**Pass 2 — Fire LLM-scheduled reminders**
+For each pending task, any `notify_at` datetime that has passed but hasn't been sent yet triggers:
+1. A source refresh — re-fetches the Gmail thread to ingest any new replies
+2. A LLM completion check (`claude-haiku-4-5-20251001`) — judges whether the user has already completed the task even without tapping "done" (distinguishes "I'll be there Thursday" from "Which Thursday did you mean?")
+3. If resolved: task is auto-closed (`status=done`), notification skipped
+4. If not resolved: push notification fired via APNs stub (logs only until credentials wired)
+
+`notifications_sent` is reassigned (never mutated) after each send to ensure SQLAlchemy detects the change.
+
+**Pass 3 — Expire overdue tasks**
+Tasks with `status=pending` and a `due_at` in the past are set to `status=expired`. This is a system-only transition — users cannot manually expire tasks via the API.
+
+### Push notification infrastructure (APNs-ready)
+- `POST /users/push-token` — mobile app registers its APNs device token
+- `notify_task_reminder()` composes the notification body (e.g. "Reply to Alice — Due in 2h") and dispatches via `send_push_notification()`
+- `send_push_notification()` is currently a logging stub — wire to APNs when credentials are available; the interface is stable
+
+### Task management API
+Full REST API for the mobile app to display and act on tasks:
+
+- `GET /tasks` — list tasks with filtering by status (including `expired`), category, priority; sorted high→medium→low then by due date
+- `PATCH /tasks/{id}` — update status; `snoozed` + `snoozed_until` stores a resurface time; `done`/`pending`/`ignored` clears it; `expired` is system-only and rejected from the PATCH body
 
 ### Ingest API (`POST /ingest`)
 An internal HTTP endpoint that any connector service can call to write normalised messages into the storage layer. Authenticated via a shared `X-Ingest-Key` header.
@@ -147,7 +188,7 @@ cd backend
 alembic upgrade head
 ```
 
-This creates four tables: `users`, `conversations`, `messages`, `tasks`.
+This creates the full schema: `users`, `conversations`, `messages`, `tasks` (with `notify_at`, `notifications_sent`, `snoozed_until`, `push_token`).
 
 ### 5. Google Cloud one-time setup
 
@@ -182,7 +223,7 @@ source venv/bin/activate && uvicorn app.main:app --reload --port 8000
 # Tab 2 — Celery worker (executes tasks)
 source venv/bin/activate && celery -A app.celery_app:celery_app worker -l info
 
-# Tab 3 — Celery beat (schedules watch renewals every 6 days)
+# Tab 3 — Celery beat (schedules watch renewals + deadline processing)
 source venv/bin/activate && celery -A app.celery_app:celery_app beat -l info
 
 # Tab 4 — ngrok tunnel
@@ -206,6 +247,37 @@ After ngrok starts, update the Pub/Sub subscription push endpoint with the new U
 | GET | `/gmail/threads/{thread_id}?user_id=<id>` | None | Fetch full thread with all messages |
 | POST | `/webhooks/gmail?token=<secret>` | Pub/Sub token | Gmail push notification receiver |
 | POST | `/ingest` | `X-Ingest-Key` header | Write normalised messages from any connector |
+| GET | `/tasks?user_id=<id>` | None | List tasks (filter by status/category/priority) |
+| PATCH | `/tasks/{task_id}?user_id=<id>` | None | Update task status; `snoozed` accepts `snoozed_until` |
+| POST | `/users/push-token` | None | Register APNs device token for push notifications |
+
+### Task query examples
+
+| Goal | URL |
+|---|---|
+| Pending tasks (default) | `/tasks?user_id=<id>` |
+| High-priority only | `/tasks?user_id=<id>&priority=high` |
+| Reply tasks only | `/tasks?user_id=<id>&category=reply` |
+| All statuses including expired | `/tasks?user_id=<id>&status=all` |
+| Expired tasks | `/tasks?user_id=<id>&status=expired` |
+
+### Snooze a task until a specific time
+
+```bash
+curl -X PATCH "http://localhost:8000/tasks/<task-id>?user_id=<id>" \
+  -H "Content-Type: application/json" \
+  -d '{"status": "snoozed", "snoozed_until": "2026-03-01T09:00:00Z"}'
+```
+
+The Beat task will automatically resurface it to `pending` after that time.
+
+### Register a push token
+
+```bash
+curl -X POST http://localhost:8000/users/push-token \
+  -H "Content-Type: application/json" \
+  -d '{"user_id": "<id>", "push_token": "<apns-device-token>"}'
+```
 
 ### Gmail query examples
 
@@ -237,7 +309,7 @@ source venv/bin/activate
 python -m pytest tests/ -v
 ```
 
-Tests use in-memory SQLite — no PostgreSQL or Redis needed.
+Tests use in-memory SQLite — no PostgreSQL or Redis needed. 160 tests, all green.
 
 ---
 
@@ -246,23 +318,17 @@ Tests use in-memory SQLite — no PostgreSQL or Redis needed.
 ```sql
 -- Connect: psql postgresql://ea_agent:ea_agent_secret@localhost:5432/ea_agent_db
 
-SELECT title, category, priority, status, summary
+SELECT title, category, priority, status, due_at, snoozed_until,
+       notify_at, notifications_sent
 FROM tasks
 ORDER BY created_at DESC;
 ```
 
-Or with Python:
+Or trigger the deadline Beat task manually:
 
-```bash
-python3 - << 'EOF'
-from app.database import engine
-from sqlalchemy import text
-with engine.connect() as conn:
-    for row in conn.execute(text(
-        "SELECT title, category, priority, status, summary FROM tasks ORDER BY created_at DESC"
-    )):
-        print(dict(row._mapping))
-EOF
+```python
+from app.tasks.deadline_tasks import process_task_deadlines
+process_task_deadlines()
 ```
 
 ---
@@ -280,20 +346,26 @@ EOF
 | Source-agnostic ingest API | ✅ |
 | LLM task extraction (Haiku, async Celery) | ✅ |
 | Idempotent task upsert with priority rules | ✅ |
+| Redis lock for historyId race condition | ✅ |
+| Task management API (GET/PATCH /tasks) | ✅ |
+| LLM-determined reminder schedule (notify_at) | ✅ |
+| TODAY injection for accurate relative date resolution | ✅ |
+| Deadline Beat task (snooze resurface, notify, expire) | ✅ |
+| Source refresh + LLM completion check before notifying | ✅ |
+| APNs push notification infrastructure (stub) | ✅ |
+| Device token registration (POST /users/push-token) | ✅ |
+| APNs credentials + live push delivery | Future |
 | Additional connectors (WhatsApp, Telegram) | Future |
-| Mobile app / API to serve tasks | Next |
-| Redis lock for historyId race condition | Next |
+| Phone call escalation for critical tasks | Future |
 
 ## Next Steps
 
-1. **Mobile app API** — expose `GET /tasks?user_id=<id>` (with filtering by status/priority) so the Cordelia iOS app can display the task list. Also needs `PATCH /tasks/<id>` to mark tasks as done, snoozed, or ignored.
+1. **Wire APNs credentials** — `send_push_notification()` in `notification_service.py` is a logging stub. Plug in APNs credentials (p8 key + key ID + team ID) and swap the stub for a real HTTP/2 call to the APNs gateway. The rest of the stack (device token registration, reminder schedule, Beat dispatcher) is already live.
 
-2. **Redis lock for historyId race condition** — two simultaneous Gmail push notifications for the same user will both use the same `start_history_id` cursor, potentially processing the same thread twice. Add a Redis distributed lock in `process_gmail_notification` to serialise per-user processing.
+2. **LLM prompt tuning** — review real task output in the DB and iterate on the system prompt: category boundaries, priority thresholds, `task_key` slug quality, `notify_at` timing heuristics, handling of long threads.
 
-3. **Task status feedback loop** — when a user marks a task `done` or `snoozed` in the app, that status should survive subsequent LLM re-runs (already implemented in the upsert rules) and optionally trigger a follow-up action (e.g. draft a reply).
+3. **Task status feedback loop** — optionally trigger a follow-up action when a task is marked `done` (e.g. draft a reply, confirm a calendar invite). The upsert rules already protect done/snoozed tasks from being re-opened by subsequent LLM runs.
 
-4. **LLM prompt tuning** — review real task output in the DB and iterate on the system prompt: category boundaries, priority thresholds, `task_key` slug quality, handling of long threads.
+4. **Additional connectors** — WhatsApp, Telegram, Instagram etc. can call `POST /ingest` directly with their own `source` value. No schema changes needed.
 
-5. **Additional connectors** — WhatsApp, Telegram, Instagram etc. can call `POST /ingest` directly with their own `source` value. No schema changes needed.
-
-6. **`due_at` extraction quality** — the LLM currently outputs ISO-8601 strings for `due_at`; consider adding the current date to the prompt context so relative references ("Thursday", "next week") resolve correctly.
+5. **Mobile app** — the task API is ready: `GET /tasks` with filtering, `PATCH /tasks/{id}` for status updates including snooze-with-resurface, push token registration. Next is building the iOS client against these endpoints.

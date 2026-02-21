@@ -31,6 +31,9 @@ class Task(Base):
     ignore_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     llm_model: Mapped[str] = mapped_column(String(100), nullable=False)
     raw_llm_output: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    notify_at: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    notifications_sent: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    snoozed_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
     )

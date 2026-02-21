@@ -40,7 +40,7 @@ def upsert_tasks(
 
     Upsert rules:
     - No existing row  → INSERT; status=ignored if category=ignored, else pending
-    - pending          → UPDATE title/summary/due_at; priority only bumps UP
+    - pending          → UPDATE title/summary/due_at/notify_at; priority only bumps UP
     - done / snoozed   → UPDATE llm_model + raw_llm_output only
     - ignored          → no-op, skip entirely
     """
@@ -72,6 +72,8 @@ def upsert_tasks(
                 ignore_reason=llm_task.ignore_reason,
                 llm_model=llm_model,
                 raw_llm_output=raw_llm_output,
+                notify_at=llm_task.notify_at,
+                notifications_sent=[],
                 created_at=now,
                 updated_at=now,
             )
@@ -90,10 +92,11 @@ def upsert_tasks(
             results.append(existing)
 
         else:
-            # pending — UPDATE title, summary, due_at; priority only bumps UP
+            # pending — UPDATE title, summary, due_at, notify_at; priority only bumps UP
             existing.title = llm_task.title
             existing.summary = llm_task.summary
             existing.due_at = _parse_due_at(llm_task.due_at)
+            existing.notify_at = llm_task.notify_at   # LLM may have better date info on re-run
             existing.llm_model = llm_model
             existing.raw_llm_output = raw_llm_output
             existing.updated_at = now
