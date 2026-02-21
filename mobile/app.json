@@ -1,0 +1,27 @@
+{
+  "expo": {
+    "name": "Cordelia",
+    "slug": "cordelia",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.cordelia.app"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#ffffff"
+      },
+      "package": "com.cordelia.app"
+    },
+    "plugins": [
+      [
+        "expo-notifications",
+        {
+          "iosDisplayInForeground": true
+        }
+      ]
+    ]
+  }
+}
