@@ -58,7 +58,19 @@ export function TaskListScreen({ userId, onSignOut }: Props) {
   const [snoozingTask, setSnoozingTask] = useState<Task | null>(null);
   const [activeTab, setActiveTab] = useState<TabKey>('high');
 
-  // Load data when tab changes
+  // Auto sign-out when the session is invalid (user deleted from DB)
+  useEffect(() => {
+    if (error && error.includes('404')) {
+      onSignOut();
+    }
+  }, [error, onSignOut]);
+
+  // Load data when tab changes.
+  // pageSize and pools are intentionally excluded from deps:
+  //   - pools: would re-trigger on every data load causing an infinite loop
+  //   - pageSize: derived from useWindowDimensions and can fluctuate across renders,
+  //               re-triggering the load on every dimension change
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (activeTab === 'all') {
       const poolTabs: PoolTabKey[] = ['high', 'medium', 'low', 'missed'];
@@ -73,9 +85,7 @@ export function TaskListScreen({ userId, onSignOut }: Props) {
         loadTab(tab, pageSize);
       }
     }
-  // We intentionally only re-run when activeTab or pageSize changes (pools would cause infinite loop)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, pageSize]);
+  }, [activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // AppState listener: re-evaluate hint on foreground
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
@@ -148,7 +158,7 @@ export function TaskListScreen({ userId, onSignOut }: Props) {
   }, [activeTab, pageSize, refreshTab]);
 
   const isMissedView = activeTab === 'missed';
-  const isLoading = tabLoading && visible.length === 0;
+  const isLoading = tabLoading && visible.length === 0 && !error;
 
   return (
     <SafeAreaView style={styles.container}>
