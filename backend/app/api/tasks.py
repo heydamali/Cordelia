@@ -27,6 +27,8 @@ def list_tasks(
     status: str = Query("pending", description="Filter by status: pending/done/snoozed/ignored/expired/all"),
     category: str | None = Query(None, description="Filter by category, e.g. reply, appointment"),
     priority: str | None = Query(None, description="Filter by priority: high/medium/low"),
+    limit: int = Query(20, ge=1, le=100, description="Maximum number of tasks to return"),
+    offset: int = Query(0, ge=0, description="Number of tasks to skip"),
     db: Session = Depends(get_db),
 ):
     """List tasks for a user, sorted by priority then due date."""
@@ -70,16 +72,18 @@ def list_tasks(
     if priority is not None:
         query = query.filter(Task.priority == priority)
 
-    tasks = (
-        query.order_by(
-            priority_rank,
-            Task.due_at.asc().nullslast(),
-            Task.created_at.asc(),
-        )
-        .all()
+    base_query = query.order_by(
+        priority_rank,
+        Task.due_at.asc().nullslast(),
+        Task.created_at.asc(),
     )
 
-    return TaskListResponseSchema(tasks=tasks, total=len(tasks))
+    total = base_query.count()
+    tasks_plus_one = base_query.offset(offset).limit(limit + 1).all()
+    has_more = len(tasks_plus_one) > limit
+    tasks = tasks_plus_one[:limit]
+
+    return TaskListResponseSchema(tasks=tasks, total=total, has_more=has_more, offset=offset)
 
 
 @router.patch("/{task_id}", response_model=TaskSchema)

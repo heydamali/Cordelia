@@ -1,4 +1,4 @@
-import { BASE_URL, USER_ID } from '../config';
+import { BASE_URL } from '../config';
 import { Task, TaskListResponse, UpdateTaskBody } from '../types/task';
 
 // ngrok-skip-browser-warning bypasses the ngrok browser interstitial page
@@ -7,19 +7,39 @@ const BASE_HEADERS = {
   'ngrok-skip-browser-warning': 'true',
 };
 
-export async function fetchTasks(status = 'pending'): Promise<Task[]> {
-  const res = await fetch(
-    `${BASE_URL}/tasks?user_id=${USER_ID}&status=${status}`,
-    { headers: BASE_HEADERS },
-  );
-  if (!res.ok) throw new Error(`fetchTasks failed: ${res.status}`);
-  const data: TaskListResponse = await res.json();
-  return data.tasks;
+interface FetchTasksOptions {
+  limit?: number;
+  offset?: number;
+  priority?: string;
 }
 
-export async function updateTask(taskId: string, body: UpdateTaskBody): Promise<Task> {
+export async function fetchTasks(
+  userId: string,
+  status = 'pending',
+  options: FetchTasksOptions = {},
+): Promise<{ tasks: Task[]; has_more: boolean; total: number }> {
+  const { limit = 20, offset = 0, priority } = options;
+  const params = new URLSearchParams({
+    user_id: userId,
+    status,
+    limit: String(limit),
+    offset: String(offset),
+  });
+  if (priority) params.set('priority', priority);
+
+  const res = await fetch(`${BASE_URL}/tasks?${params.toString()}`, { headers: BASE_HEADERS });
+  if (!res.ok) throw new Error(`fetchTasks failed: ${res.status}`);
+  const data: TaskListResponse = await res.json();
+  return { tasks: data.tasks, has_more: data.has_more, total: data.total };
+}
+
+export async function updateTask(
+  userId: string,
+  taskId: string,
+  body: UpdateTaskBody,
+): Promise<Task> {
   const res = await fetch(
-    `${BASE_URL}/tasks/${taskId}?user_id=${USER_ID}`,
+    `${BASE_URL}/tasks/${taskId}?user_id=${userId}`,
     {
       method: 'PATCH',
       headers: BASE_HEADERS,
@@ -30,11 +50,11 @@ export async function updateTask(taskId: string, body: UpdateTaskBody): Promise<
   return res.json();
 }
 
-export async function registerPushToken(pushToken: string): Promise<void> {
+export async function registerPushToken(userId: string, pushToken: string): Promise<void> {
   const res = await fetch(`${BASE_URL}/users/push-token`, {
     method: 'POST',
     headers: BASE_HEADERS,
-    body: JSON.stringify({ user_id: USER_ID, push_token: pushToken }),
+    body: JSON.stringify({ user_id: userId, push_token: pushToken }),
   });
   if (!res.ok) throw new Error(`registerPushToken failed: ${res.status}`);
 }

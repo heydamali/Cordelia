@@ -1,5 +1,12 @@
-import React, { useRef } from 'react';
+import React, { useRef, useEffect } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withTiming,
+  withSequence,
+  withDelay,
+} from 'react-native-reanimated';
 import Swipeable from 'react-native-gesture-handler/Swipeable';
 import * as Haptics from 'expo-haptics';
 import { Task } from '../types/task';
@@ -32,13 +39,41 @@ interface Props {
   onDone: () => void;
   onSnooze: () => void;
   onIgnore: () => void;
+  showHint?: boolean;
+  onHintShown?: () => void;
 }
 
-export function TaskCard({ task, onDone, onSnooze, onIgnore }: Props) {
-  const ref = useRef<Swipeable>(null);
+export function TaskCard({ task, onDone, onSnooze, onIgnore, showHint, onHintShown }: Props) {
+  const swipeRef = useRef<Swipeable>(null);
   const due = formatDue(task.due_at, task.status);
+  const offsetX = useSharedValue(0);
 
-  const close = () => ref.current?.close();
+  const close = () => swipeRef.current?.close();
+
+  useEffect(() => {
+    if (!showHint) return;
+
+    offsetX.value = withSequence(
+      withTiming(-55, { duration: 300 }),   // peek right actions
+      withTiming(0,   { duration: 250 }),
+      withDelay(200,
+        withSequence(
+          withTiming(55, { duration: 300 }), // peek left action
+          withTiming(0,  { duration: 250 }),
+        ),
+      ),
+    );
+
+    // Mark hint as shown after animation completes (~1300ms total)
+    const timer = setTimeout(() => {
+      onHintShown?.();
+    }, 1300);
+    return () => clearTimeout(timer);
+  }, [showHint]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const animStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: offsetX.value }],
+  }));
 
   const renderLeft = () => (
     <TouchableOpacity
@@ -83,13 +118,13 @@ export function TaskCard({ task, onDone, onSnooze, onIgnore }: Props) {
 
   return (
     <Swipeable
-      ref={ref}
+      ref={swipeRef}
       renderLeftActions={renderLeft}
       renderRightActions={renderRight}
       leftThreshold={60}
       rightThreshold={60}
     >
-      <View style={styles.card}>
+      <Animated.View style={[styles.card, animStyle]}>
         <View style={[styles.dot, { backgroundColor: PRIORITY_COLOR[task.priority] }]} />
         <View style={styles.body}>
           <Text style={styles.title} numberOfLines={2}>{task.title}</Text>
@@ -105,7 +140,7 @@ export function TaskCard({ task, onDone, onSnooze, onIgnore }: Props) {
             <Text style={styles.summary} numberOfLines={2}>{task.summary}</Text>
           ) : null}
         </View>
-      </View>
+      </Animated.View>
     </Swipeable>
   );
 }

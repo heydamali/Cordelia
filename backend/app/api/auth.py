@@ -1,7 +1,9 @@
+import base64
 import logging
 from datetime import datetime, timezone
+from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
@@ -11,6 +13,7 @@ from app.config import settings
 from app.database import get_db
 from app.models.user import User
 from app.services.gmail_connector import GmailConnector, GmailAuthError, GmailAPIError
+from app.tasks.gmail_tasks import initial_gmail_sync
 
 logger = logging.getLogger(__name__)
 
@@ -39,27 +42,29 @@ def _create_flow() -> Flow:
 
 
 @router.get("/google")
-def auth_google():
+def auth_google(app_redirect: str | None = Query(None)):
     flow = _create_flow()
-    authorization_url, _ = flow.authorization_url(
+
+    auth_kwargs: dict = dict(
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent",
     )
+    # If called from the mobile app, encode the mobile redirect URI in OAuth state
+    # so the callback can redirect back to the app instead of returning JSON.
+    if app_redirect:
+        state = base64.urlsafe_b64encode(app_redirect.encode()).decode().rstrip("=")
+        auth_kwargs["state"] = state
+
+    authorization_url, _ = flow.authorization_url(**auth_kwargs)
     return RedirectResponse(url=authorization_url)
 
 
 @router.get("/google/callback")
-def auth_google_callback(code: str, db: Session = Depends(get_db)):
+def auth_google_callback(code: str, state: str | None = None, db: Session = Depends(get_db)):
     flow = _create_flow()
     flow.fetch_token(code=code)
     credentials = flow.credentials
-
-    if not credentials.refresh_token:
-        raise HTTPException(
-            status_code=400,
-            detail="No refresh token received. Revoke access at https://myaccount.google.com/permissions and try again.",
-        )
 
     # Fetch user profile from Google
     oauth2_service = build("oauth2", "v2", credentials=credentials)
@@ -70,16 +75,25 @@ def auth_google_callback(code: str, db: Session = Depends(get_db)):
     name = user_info.get("name")
 
     # Upsert user
-    user = db.query(User).filter(User.email == email).first()
-    if user is None:
+    existing = db.query(User).filter(User.email == email).first()
+    was_new_user = existing is None
+    if was_new_user:
         user = User(email=email, google_id=google_id, name=name)
         db.add(user)
     else:
+        user = existing
         user.google_id = google_id
         if name:
             user.name = name
 
-    user.set_refresh_token(credentials.refresh_token)
+    if credentials.refresh_token:
+        user.set_refresh_token(credentials.refresh_token)
+    elif was_new_user:
+        raise HTTPException(
+            status_code=400,
+            detail="No refresh token received. Revoke access at https://myaccount.google.com/permissions and try again.",
+        )
+
     db.commit()
     db.refresh(user)
 
@@ -92,6 +106,19 @@ def auth_google_callback(code: str, db: Session = Depends(get_db)):
     except (GmailAuthError, GmailAPIError) as exc:
         logger.warning("failed to register watch for user %s: %s", user.id, exc)
         # Don't fail the OAuth flow — Beat will renew it
+
+    if was_new_user:
+        initial_gmail_sync.delay(user.id)
+        logger.info("enqueued initial_gmail_sync for new user %s", user.id)
+
+    # Decode mobile redirect URI from state and redirect back to the app
+    if state:
+        try:
+            padding = "=" * ((4 - len(state) % 4) % 4)
+            app_redirect = base64.urlsafe_b64decode(state + padding).decode()
+            return RedirectResponse(url=f"{app_redirect}?{urlencode({'user_id': user.id, 'email': user.email})}")
+        except Exception:
+            logger.warning("auth_google_callback: failed to decode state for redirect")
 
     return {
         "message": "Google OAuth successful",

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -8,13 +8,23 @@ import {
   SafeAreaView,
   TouchableOpacity,
   RefreshControl,
+  AppState,
+  AppStateStatus,
+  useWindowDimensions,
 } from 'react-native';
 import { useTasks } from '../hooks/useTasks';
+import { useSwipeHint } from '../hooks/useSwipeHint';
 import { TaskCard } from '../components/TaskCard';
 import { SnoozeModal } from '../components/SnoozeModal';
 import { Task, TaskPriority } from '../types/task';
 
+interface Props {
+  userId: string;
+  onSignOut: () => void;
+}
+
 type TabKey = 'all' | TaskPriority | 'missed';
+type PoolTabKey = 'high' | 'medium' | 'low' | 'missed';
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: 'all',    label: 'All' },
@@ -24,35 +34,81 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: 'missed', label: '⚫ Missed' },
 ];
 
-// Derive what to fetch from the active tab.
-// 'all'    → fetch missed + pending (merged, missed first)
-// priority → fetch pending (client-side priority filter)
-// 'missed' → fetch missed only
-function loadStatusFor(tab: TabKey): string | string[] {
-  if (tab === 'all')    return ['missed', 'pending'];
-  if (tab === 'missed') return 'missed';
-  return 'pending';
-}
+const CARD_HEIGHT = 90;
+const UI_CHROME = 174; // header + filter row + safe area
 
-export function TaskListScreen() {
-  const { tasks, loading, refreshing, error, load, updateTaskStatus } = useTasks();
+export function TaskListScreen({ userId, onSignOut }: Props) {
+  const { height } = useWindowDimensions();
+  const pageSize = Math.max(5, Math.ceil((height - UI_CHROME) / CARD_HEIGHT));
+
+  const {
+    pools,
+    tabLoading,
+    tabRefreshing,
+    error,
+    loadTab,
+    loadMoreTab,
+    loadMoreAll,
+    refreshTab,
+    updateTaskStatus,
+  } = useTasks(userId);
+
+  const { shouldShow, markShown, checkHint } = useSwipeHint();
+
   const [snoozingTask, setSnoozingTask] = useState<Task | null>(null);
   const [activeTab, setActiveTab] = useState<TabKey>('high');
 
-  // loadMode changes only when switching between fetch-distinct categories
-  // (all / priority / missed). Switching High↔Med↔Low stays in 'priority'
-  // mode and never triggers a reload.
-  const loadMode = activeTab === 'all' ? 'all' : activeTab === 'missed' ? 'missed' : 'priority';
-
+  // Load data when tab changes
   useEffect(() => {
-    load(loadStatusFor(activeTab));
+    if (activeTab === 'all') {
+      const poolTabs: PoolTabKey[] = ['high', 'medium', 'low', 'missed'];
+      for (const tab of poolTabs) {
+        if (!pools[tab].loaded) {
+          loadTab(tab, pageSize);
+        }
+      }
+    } else {
+      const tab = activeTab as PoolTabKey;
+      if (!pools[tab].loaded) {
+        loadTab(tab, pageSize);
+      }
+    }
+  // We intentionally only re-run when activeTab or pageSize changes (pools would cause infinite loop)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [load, loadMode]);
+  }, [activeTab, pageSize]);
 
-  const visible = useMemo(() => {
-    if (loadMode === 'all' || loadMode === 'missed') return tasks;
-    return tasks.filter(t => t.priority === activeTab);
-  }, [tasks, loadMode, activeTab]);
+  // AppState listener: re-evaluate hint on foreground
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next: AppStateStatus) => {
+      if (appStateRef.current.match(/inactive|background/) && next === 'active') {
+        checkHint();
+      }
+      appStateRef.current = next;
+    });
+    return () => sub.remove();
+  }, [checkHint]);
+
+  const visible = useMemo<Task[]>(() => {
+    if (activeTab === 'all') {
+      return [
+        ...pools.missed.tasks,
+        ...pools.high.tasks,
+        ...pools.medium.tasks,
+        ...pools.low.tasks,
+      ];
+    }
+    return pools[activeTab as PoolTabKey].tasks;
+  }, [activeTab, pools]);
+
+  const totalBadge = useMemo(() => {
+    return (
+      pools.high.tasks.length +
+      pools.medium.tasks.length +
+      pools.low.tasks.length +
+      pools.missed.tasks.length
+    );
+  }, [pools]);
 
   const handleDone = useCallback(
     (task: Task) => updateTaskStatus(task.id, { status: 'done' }),
@@ -72,16 +128,40 @@ export function TaskListScreen() {
     [updateTaskStatus],
   );
 
+  const handleEndReached = useCallback(() => {
+    if (activeTab === 'all') {
+      loadMoreAll(pageSize);
+    } else {
+      loadMoreTab(activeTab as PoolTabKey, pageSize);
+    }
+  }, [activeTab, pageSize, loadMoreAll, loadMoreTab]);
+
+  const handleRefresh = useCallback(() => {
+    if (activeTab === 'all') {
+      const poolTabs: PoolTabKey[] = ['high', 'medium', 'low', 'missed'];
+      for (const tab of poolTabs) {
+        refreshTab(tab, pageSize);
+      }
+    } else {
+      refreshTab(activeTab as PoolTabKey, pageSize);
+    }
+  }, [activeTab, pageSize, refreshTab]);
+
   const isMissedView = activeTab === 'missed';
+  const isLoading = tabLoading && visible.length === 0;
 
   return (
     <SafeAreaView style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.title}>Cordelia</Text>
-        {tasks.length > 0 && (
-          <Text style={styles.badge}>{tasks.length}</Text>
+        {totalBadge > 0 && (
+          <Text style={styles.badge}>{totalBadge}</Text>
         )}
+        <View style={{ flex: 1 }} />
+        <TouchableOpacity onPress={onSignOut} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          <Text style={styles.signOutText}>Sign out</Text>
+        </TouchableOpacity>
       </View>
 
       {/* Tabs */}
@@ -103,33 +183,42 @@ export function TaskListScreen() {
       {error ? (
         <View style={styles.errorBanner}>
           <Text style={styles.errorText}>{error}</Text>
-          <TouchableOpacity onPress={() => load(loadStatusFor(activeTab))}>
+          <TouchableOpacity onPress={handleRefresh}>
             <Text style={styles.retryText}>Retry</Text>
           </TouchableOpacity>
         </View>
       ) : null}
 
       {/* Content */}
-      {loading && !refreshing ? (
+      {isLoading ? (
         <ActivityIndicator style={styles.spinner} size="large" color="#007AFF" />
       ) : (
         <FlatList
           data={visible}
           keyExtractor={t => t.id}
-          renderItem={({ item }) => (
+          renderItem={({ item, index }) => (
             <TaskCard
               task={item}
               onDone={() => handleDone(item)}
               onSnooze={() => setSnoozingTask(item)}
               onIgnore={() => handleIgnore(item)}
+              showHint={shouldShow && index === 0}
+              onHintShown={markShown}
             />
           )}
           refreshControl={
             <RefreshControl
-              refreshing={refreshing}
-              onRefresh={() => load(loadStatusFor(activeTab), true)}
+              refreshing={tabRefreshing}
+              onRefresh={handleRefresh}
               tintColor="#007AFF"
             />
+          }
+          onEndReached={handleEndReached}
+          onEndReachedThreshold={0.3}
+          ListFooterComponent={
+            tabLoading && visible.length > 0 ? (
+              <ActivityIndicator style={styles.footerSpinner} color="#007AFF" />
+            ) : null
           }
           contentContainerStyle={visible.length === 0 ? styles.emptyWrap : styles.list}
           ListEmptyComponent={
@@ -179,6 +268,11 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     overflow: 'hidden',
   },
+  signOutText: {
+    fontSize: 13,
+    color: '#8E8E93',
+    fontWeight: '500',
+  },
   filterRow: {
     flexDirection: 'row',
     paddingHorizontal: 16,
@@ -225,6 +319,9 @@ const styles = StyleSheet.create({
   },
   spinner: {
     marginTop: 60,
+  },
+  footerSpinner: {
+    marginVertical: 16,
   },
   list: {
     paddingBottom: 32,

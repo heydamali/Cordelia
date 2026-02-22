@@ -16,6 +16,8 @@ from app.services.gmail_connector import (
     HistoryListResult,
     HistoryRecord,
     ThreadDetail,
+    ThreadListResult,
+    ThreadSummary,
     WatchRegistration,
 )
 
@@ -354,3 +356,186 @@ class TestGmailLock:
                 process_gmail_notification("user-1", "11111")
 
         mock_lock.release.assert_called_once()
+
+
+# ── TestInitialGmailSync ──────────────────────────────────────────────────────
+
+
+class TestInitialGmailSync:
+    def _make_thread_list_result(
+        self, thread_ids: list[str], next_page_token: str | None = None
+    ) -> ThreadListResult:
+        threads = [
+            ThreadSummary(thread_id=tid, snippet="snippet", history_id="h1")
+            for tid in thread_ids
+        ]
+        return ThreadListResult(
+            threads=threads,
+            next_page_token=next_page_token,
+            result_size_estimate=len(threads),
+        )
+
+    def _run(self, user, connector=None):
+        mock_db = _make_mock_db(user)
+        mock_ingest = MagicMock()
+        mock_ingest.return_value = MagicMock(id="conv-1")
+        mock_llm = MagicMock()
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(
+                patch("app.tasks.gmail_tasks.SessionLocal", return_value=mock_db)
+            )
+            stack.enter_context(
+                patch("app.tasks.gmail_tasks.ingest", mock_ingest)
+            )
+            stack.enter_context(
+                patch("app.tasks.gmail_tasks.process_conversation_with_llm", mock_llm)
+            )
+            if connector is not None:
+                stack.enter_context(
+                    patch("app.tasks.gmail_tasks.GmailConnector", return_value=connector)
+                )
+            from app.tasks.gmail_tasks import initial_gmail_sync
+            initial_gmail_sync("user-1")
+
+        return mock_db, mock_ingest, mock_llm
+
+    def test_user_not_found_returns_early(self):
+        mock_db, mock_ingest, _ = self._run(user=None)
+        mock_ingest.assert_not_called()
+        mock_db.close.assert_called_once()
+
+    def test_no_refresh_token_returns_early(self):
+        user = _make_mock_user(has_token=False)
+
+        connector_cls = MagicMock(side_effect=ValueError("no token"))
+        mock_db = _make_mock_db(user)
+        mock_ingest = MagicMock()
+        mock_llm = MagicMock()
+
+        with (
+            patch("app.tasks.gmail_tasks.SessionLocal", return_value=mock_db),
+            patch("app.tasks.gmail_tasks.ingest", mock_ingest),
+            patch("app.tasks.gmail_tasks.process_conversation_with_llm", mock_llm),
+            patch("app.tasks.gmail_tasks.GmailConnector", connector_cls),
+        ):
+            from app.tasks.gmail_tasks import initial_gmail_sync
+            initial_gmail_sync("user-1")
+
+        mock_ingest.assert_not_called()
+        mock_db.close.assert_called_once()
+
+    def test_success_fetches_all_threads_and_queues_llm(self):
+        user = _make_mock_user()
+        thread_result = self._make_thread_list_result(["t1", "t2"])
+
+        connector = MagicMock()
+        connector.list_threads.return_value = thread_result
+        connector.get_thread.return_value = _make_thread_detail()
+
+        _, mock_ingest, mock_llm = self._run(user=user, connector=connector)
+
+        connector.list_threads.assert_called_once_with(
+            query="newer_than:1d", max_results=50, page_token=None
+        )
+        assert connector.get_thread.call_count == 2
+        assert mock_ingest.call_count == 2
+        mock_llm.delay.assert_called()
+
+    def test_list_threads_api_error_stops_loop_gracefully(self):
+        user = _make_mock_user()
+
+        connector = MagicMock()
+        connector.list_threads.side_effect = GmailAPIError(500, "server error")
+
+        _, mock_ingest, _ = self._run(user=user, connector=connector)
+
+        mock_ingest.assert_not_called()
+
+    def test_list_threads_auth_error_stops_loop_gracefully(self):
+        user = _make_mock_user()
+
+        connector = MagicMock()
+        connector.list_threads.side_effect = GmailAuthError("revoked")
+
+        _, mock_ingest, _ = self._run(user=user, connector=connector)
+
+        mock_ingest.assert_not_called()
+
+    def test_per_thread_error_is_swallowed_and_others_continue(self):
+        user = _make_mock_user()
+        thread_result = self._make_thread_list_result(["t1", "t2", "t3"])
+
+        connector = MagicMock()
+        connector.list_threads.return_value = thread_result
+
+        call_count = 0
+
+        def get_thread_side_effect(thread_id):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                raise GmailAPIError(404, "not found")
+            return _make_thread_detail(thread_id)
+
+        connector.get_thread.side_effect = get_thread_side_effect
+
+        _, mock_ingest, _ = self._run(user=user, connector=connector)
+
+        # 3 threads attempted, 1 failed — 2 ingested
+        assert mock_ingest.call_count == 2
+
+    def test_pagination_follows_next_page_token(self):
+        user = _make_mock_user()
+
+        page1 = self._make_thread_list_result(["t1", "t2"], next_page_token="tok2")
+        page2 = self._make_thread_list_result(["t3"], next_page_token=None)
+
+        connector = MagicMock()
+        connector.list_threads.side_effect = [page1, page2]
+        connector.get_thread.return_value = _make_thread_detail()
+
+        _, mock_ingest, _ = self._run(user=user, connector=connector)
+
+        assert connector.list_threads.call_count == 2
+        connector.list_threads.assert_any_call(
+            query="newer_than:1d", max_results=50, page_token=None
+        )
+        connector.list_threads.assert_any_call(
+            query="newer_than:1d", max_results=50, page_token="tok2"
+        )
+        assert mock_ingest.call_count == 3
+
+    def test_pagination_error_on_second_page_stops_gracefully(self):
+        user = _make_mock_user()
+
+        page1 = self._make_thread_list_result(["t1"], next_page_token="tok2")
+
+        connector = MagicMock()
+        connector.list_threads.side_effect = [
+            page1,
+            GmailAPIError(500, "server error"),
+        ]
+        connector.get_thread.return_value = _make_thread_detail()
+
+        _, mock_ingest, _ = self._run(user=user, connector=connector)
+
+        # First page was processed, second failed
+        assert mock_ingest.call_count == 1
+        assert connector.list_threads.call_count == 2
+
+    def test_db_session_always_closed(self):
+        """DB session is closed even when an unexpected error occurs."""
+        mock_db = MagicMock()
+        mock_db.query.side_effect = RuntimeError("unexpected DB error")
+
+        with (
+            patch("app.tasks.gmail_tasks.SessionLocal", return_value=mock_db),
+            patch("app.tasks.gmail_tasks.ingest"),
+            patch("app.tasks.gmail_tasks.process_conversation_with_llm"),
+        ):
+            from app.tasks.gmail_tasks import initial_gmail_sync
+            with pytest.raises(RuntimeError):
+                initial_gmail_sync("user-1")
+
+        mock_db.close.assert_called_once()

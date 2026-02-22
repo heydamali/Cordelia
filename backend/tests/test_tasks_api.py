@@ -495,3 +495,164 @@ def test_patch_done_clears_snoozed_until(client, db_session):
     data = resp.json()
     assert data["status"] == "done"
     assert data["snoozed_until"] is None
+
+
+# ---------------------------------------------------------------------------
+# GET /tasks — pagination (limit / offset / has_more)
+# ---------------------------------------------------------------------------
+
+
+def test_pagination_first_page_has_more_true(client, db_session):
+    """limit=3 with 5 tasks: 3 returned, has_more=True."""
+    user = _make_user(db_session)
+    conv = _make_conversation(db_session, user)
+    for i in range(5):
+        _make_task(db_session, user, conv, title=f"Task {i}")
+
+    resp = client.get(f"/tasks?user_id={user.id}&limit=3&offset=0")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["tasks"]) == 3
+    assert data["has_more"] is True
+    assert data["offset"] == 0
+    assert data["total"] == 5
+
+
+def test_pagination_second_page_has_more_false(client, db_session):
+    """offset=3 with 5 tasks: 2 returned, has_more=False."""
+    user = _make_user(db_session)
+    conv = _make_conversation(db_session, user)
+    for i in range(5):
+        _make_task(db_session, user, conv, title=f"Task {i}")
+
+    resp = client.get(f"/tasks?user_id={user.id}&limit=3&offset=3")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["tasks"]) == 2
+    assert data["has_more"] is False
+    assert data["offset"] == 3
+
+
+def test_pagination_exact_page_boundary_has_more_false(client, db_session):
+    """When result count exactly equals limit, has_more must be False."""
+    user = _make_user(db_session)
+    conv = _make_conversation(db_session, user)
+    for i in range(3):
+        _make_task(db_session, user, conv, title=f"Task {i}")
+
+    resp = client.get(f"/tasks?user_id={user.id}&limit=3&offset=0")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["tasks"]) == 3
+    assert data["has_more"] is False
+
+
+def test_pagination_total_reflects_full_count_not_page(client, db_session):
+    """total is always the count of ALL matching tasks, regardless of limit."""
+    user = _make_user(db_session)
+    conv = _make_conversation(db_session, user)
+    for i in range(10):
+        _make_task(db_session, user, conv)
+
+    resp = client.get(f"/tasks?user_id={user.id}&limit=3&offset=0")
+
+    assert resp.status_code == 200
+    assert resp.json()["total"] == 10
+
+
+def test_pagination_pages_are_non_overlapping_and_cover_all(client, db_session):
+    """Two sequential pages together return every task exactly once."""
+    user = _make_user(db_session)
+    conv = _make_conversation(db_session, user)
+    created_ids = {
+        _make_task(db_session, user, conv, title=f"T{i}").id for i in range(5)
+    }
+
+    page1 = client.get(f"/tasks?user_id={user.id}&limit=3&offset=0").json()["tasks"]
+    page2 = client.get(f"/tasks?user_id={user.id}&limit=3&offset=3").json()["tasks"]
+
+    returned_ids = {t["id"] for t in page1} | {t["id"] for t in page2}
+    assert returned_ids == created_ids
+
+
+def test_pagination_offset_echoed_in_response(client, db_session):
+    """The offset query param is echoed back in the response body."""
+    user = _make_user(db_session)
+    conv = _make_conversation(db_session, user)
+    _make_task(db_session, user, conv)
+
+    resp = client.get(f"/tasks?user_id={user.id}&offset=7")
+    assert resp.json()["offset"] == 7
+
+
+def test_pagination_limit_zero_returns_422(client, db_session):
+    user = _make_user(db_session)
+    resp = client.get(f"/tasks?user_id={user.id}&limit=0")
+    assert resp.status_code == 422
+
+
+def test_pagination_limit_over_100_returns_422(client, db_session):
+    user = _make_user(db_session)
+    resp = client.get(f"/tasks?user_id={user.id}&limit=101")
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# GET /tasks — priority filter
+# ---------------------------------------------------------------------------
+
+
+def test_priority_filter_returns_only_matching_priority(client, db_session):
+    user = _make_user(db_session)
+    conv = _make_conversation(db_session, user)
+    high1 = _make_task(db_session, user, conv, priority="high")
+    high2 = _make_task(db_session, user, conv, priority="high")
+    _make_task(db_session, user, conv, priority="medium")
+    _make_task(db_session, user, conv, priority="low")
+
+    resp = client.get(f"/tasks?user_id={user.id}&priority=high")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 2
+    returned_ids = {t["id"] for t in data["tasks"]}
+    assert returned_ids == {high1.id, high2.id}
+    assert all(t["priority"] == "high" for t in data["tasks"])
+
+
+def test_priority_filter_combined_with_pagination(client, db_session):
+    """priority + limit/offset work together correctly."""
+    user = _make_user(db_session)
+    conv = _make_conversation(db_session, user)
+    for i in range(4):
+        _make_task(db_session, user, conv, priority="high", title=f"High {i}")
+    _make_task(db_session, user, conv, priority="medium")
+
+    resp = client.get(f"/tasks?user_id={user.id}&priority=high&limit=2&offset=0")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["tasks"]) == 2
+    assert data["has_more"] is True
+    assert data["total"] == 4
+    assert all(t["priority"] == "high" for t in data["tasks"])
+
+
+def test_priority_filter_missed_status_combined(client, db_session):
+    """status=missed and priority filter can be combined."""
+    user = _make_user(db_session)
+    conv = _make_conversation(db_session, user)
+    _make_task(db_session, user, conv, priority="high", status="missed")
+    _make_task(db_session, user, conv, priority="low",  status="missed")
+    _make_task(db_session, user, conv, priority="high", status="pending")
+
+    resp = client.get(f"/tasks?user_id={user.id}&status=missed&priority=high")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["tasks"][0]["priority"] == "high"
+    assert data["tasks"][0]["status"] == "missed"

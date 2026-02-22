@@ -27,6 +27,8 @@ class TaskSchema(BaseModel):
 class TaskListResponseSchema(BaseModel):
     tasks: list[TaskSchema]
     total: int
+    has_more: bool
+    offset: int
 
 
 class TaskStatusUpdateSchema(BaseModel):

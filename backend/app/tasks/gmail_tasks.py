@@ -23,6 +23,82 @@ from app.tasks.llm_tasks import process_conversation_with_llm
 logger = logging.getLogger(__name__)
 
 
+def _build_ingest_payload(thread, user_id: str) -> IngestRequestSchema:
+    """Build an IngestRequestSchema from a ThreadDetail."""
+    return IngestRequestSchema(
+        source="gmail",
+        user_id=user_id,
+        conversation_source_id=thread.thread_id,
+        subject=thread.messages[0].subject if thread.messages else None,
+        messages=[
+            IngestMessageSchema(
+                source_id=msg.message_id,
+                sender_name=msg.sender.name,
+                sender_handle=msg.sender.email,
+                body_text=msg.body_plain,
+                body_html=msg.body_html,
+                sent_at=msg.date,
+                is_from_user=False,
+                raw_metadata={"labels": msg.labels},
+            )
+            for msg in thread.messages
+        ],
+    )
+
+
+@celery_app.task(name="app.tasks.gmail_tasks.initial_gmail_sync")
+def initial_gmail_sync(user_id: str) -> None:
+    """Fetch last 24h of Gmail threads for a brand-new user and run them through the ingest pipeline."""
+    db: Session = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if user is None:
+            logger.warning("initial_gmail_sync: user %s not found", user_id)
+            return
+
+        try:
+            connector = GmailConnector(user=user)
+        except ValueError as exc:
+            logger.warning("initial_gmail_sync: cannot build connector for user %s: %s", user_id, exc)
+            return
+
+        page_token: str | None = None
+        total = 0
+        while True:
+            try:
+                result = connector.list_threads(
+                    query="newer_than:1d",
+                    max_results=50,
+                    page_token=page_token,
+                )
+            except (GmailAuthError, GmailAPIError) as exc:
+                logger.error("initial_gmail_sync: list_threads failed for user %s: %s", user_id, exc)
+                break
+
+            for summary in result.threads:
+                try:
+                    thread = connector.get_thread(summary.thread_id)
+                    payload = _build_ingest_payload(thread, user_id)
+                    conversation = ingest(db, payload)
+                    process_conversation_with_llm.delay(conversation.id, user_id)
+                    total += 1
+                except (GmailAuthError, GmailAPIError) as exc:
+                    logger.warning(
+                        "initial_gmail_sync: failed to fetch thread %s for user %s: %s",
+                        summary.thread_id,
+                        user_id,
+                        exc,
+                    )
+
+            if result.next_page_token is None:
+                break
+            page_token = result.next_page_token
+
+        logger.info("initial_gmail_sync: processed %d threads for new user %s", total, user_id)
+    finally:
+        db.close()
+
+
 @celery_app.task(bind=True, max_retries=3, name="app.tasks.gmail_tasks.process_gmail_notification")
 def process_gmail_notification(self, user_id: str, notification_history_id: str) -> None:
     """Fetch new threads for a user after receiving a Gmail push notification."""
@@ -73,25 +149,7 @@ def process_gmail_notification(self, user_id: str, notification_history_id: str)
                 seen_thread_ids.add(thread_id)
                 try:
                     thread = connector.get_thread(thread_id)
-                    payload = IngestRequestSchema(
-                        source="gmail",
-                        user_id=user_id,
-                        conversation_source_id=thread.thread_id,
-                        subject=thread.messages[0].subject if thread.messages else None,
-                        messages=[
-                            IngestMessageSchema(
-                                source_id=msg.message_id,
-                                sender_name=msg.sender.name,
-                                sender_handle=msg.sender.email,
-                                body_text=msg.body_plain,
-                                body_html=msg.body_html,
-                                sent_at=msg.date,
-                                is_from_user=False,
-                                raw_metadata={"labels": msg.labels},
-                            )
-                            for msg in thread.messages
-                        ],
-                    )
+                    payload = _build_ingest_payload(thread, user_id)
                     conversation = ingest(db, payload)
                     logger.info(
                         "stored thread %s for user %s (%d messages)",

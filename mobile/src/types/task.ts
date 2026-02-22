@@ -23,6 +23,8 @@ export interface Task {
 export interface TaskListResponse {
   tasks: Task[];
   total: number;
+  has_more: boolean;
+  offset: number;
 }
 
 export interface UpdateTaskBody {
