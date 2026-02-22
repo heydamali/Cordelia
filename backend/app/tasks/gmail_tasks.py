@@ -46,9 +46,20 @@ def _build_ingest_payload(thread, user_id: str) -> IngestRequestSchema:
     )
 
 
+# Progressively wider search windows for the initial sync.
+_INITIAL_SYNC_WINDOWS: list[str] = ["newer_than:1d", "newer_than:3d", "newer_than:7d"]
+# Minimum threads ingested before we consider the screen "fillable" and stop expanding.
+_INITIAL_SYNC_MIN_THREADS: int = 5
+
+
 @celery_app.task(name="app.tasks.gmail_tasks.initial_gmail_sync")
 def initial_gmail_sync(user_id: str) -> None:
-    """Fetch last 24h of Gmail threads for a brand-new user and run them through the ingest pipeline."""
+    """Progressively fetch recent Gmail threads for a brand-new user.
+
+    Starts with the past 24 hours. If fewer than _INITIAL_SYNC_MIN_THREADS unique
+    threads are found, expands to 3 days, then 7 days, stopping as soon as the
+    threshold is met or all windows are exhausted.
+    """
     db: Session = SessionLocal()
     try:
         user = db.query(User).filter(User.id == user_id).first()
@@ -62,41 +73,79 @@ def initial_gmail_sync(user_id: str) -> None:
             logger.warning("initial_gmail_sync: cannot build connector for user %s: %s", user_id, exc)
             return
 
-        page_token: str | None = None
-        total = 0
-        while True:
+        seen_thread_ids: set[str] = set()
+
+        for query in _INITIAL_SYNC_WINDOWS:
             try:
-                result = connector.list_threads(
-                    query="newer_than:1d",
-                    max_results=50,
-                    page_token=page_token,
+                _ingest_window(db, connector, user_id, query, seen_thread_ids)
+            except GmailAuthError as exc:
+                logger.error(
+                    "initial_gmail_sync: auth error on query=%s for user %s: %s",
+                    query, user_id, exc,
                 )
-            except (GmailAuthError, GmailAPIError) as exc:
-                logger.error("initial_gmail_sync: list_threads failed for user %s: %s", user_id, exc)
+                return  # credentials revoked — no point trying wider windows
+
+            logger.info(
+                "initial_gmail_sync: query=%s seen=%d user=%s",
+                query, len(seen_thread_ids), user_id,
+            )
+            if len(seen_thread_ids) >= _INITIAL_SYNC_MIN_THREADS:
                 break
 
-            for summary in result.threads:
-                try:
-                    thread = connector.get_thread(summary.thread_id)
-                    payload = _build_ingest_payload(thread, user_id)
-                    conversation = ingest(db, payload)
-                    process_conversation_with_llm.delay(conversation.id, user_id)
-                    total += 1
-                except (GmailAuthError, GmailAPIError) as exc:
-                    logger.warning(
-                        "initial_gmail_sync: failed to fetch thread %s for user %s: %s",
-                        summary.thread_id,
-                        user_id,
-                        exc,
-                    )
-
-            if result.next_page_token is None:
-                break
-            page_token = result.next_page_token
-
-        logger.info("initial_gmail_sync: processed %d threads for new user %s", total, user_id)
+        logger.info(
+            "initial_gmail_sync: complete – processed %d threads for new user %s",
+            len(seen_thread_ids), user_id,
+        )
     finally:
         db.close()
+
+
+def _ingest_window(
+    db: Session,
+    connector: GmailConnector,
+    user_id: str,
+    query: str,
+    seen_thread_ids: set[str],
+) -> None:
+    """Fetch and ingest all threads for *query* that are not already in *seen_thread_ids*.
+
+    Mutates *seen_thread_ids* in-place with every thread encountered (even if its
+    individual fetch later fails) so that wider windows never re-process the same thread.
+
+    Raises GmailAuthError so the caller can abort all remaining windows.
+    Swallows GmailAPIError (transient / quota) and stops pagination for this window.
+    """
+    page_token: str | None = None
+    while True:
+        try:
+            result = connector.list_threads(query=query, max_results=50, page_token=page_token)
+        except GmailAuthError:
+            raise  # propagate — caller must abort
+        except GmailAPIError as exc:
+            logger.error(
+                "_ingest_window: list_threads failed query=%s user=%s: %s",
+                query, user_id, exc,
+            )
+            break
+
+        for summary in result.threads:
+            if summary.thread_id in seen_thread_ids:
+                continue  # already processed in a narrower window
+            seen_thread_ids.add(summary.thread_id)
+            try:
+                thread = connector.get_thread(summary.thread_id)
+                payload = _build_ingest_payload(thread, user_id)
+                conversation = ingest(db, payload)
+                process_conversation_with_llm.delay(conversation.id, user_id)
+            except (GmailAuthError, GmailAPIError) as exc:
+                logger.warning(
+                    "_ingest_window: failed to fetch thread %s for user %s: %s",
+                    summary.thread_id, user_id, exc,
+                )
+
+        if result.next_page_token is None:
+            break
+        page_token = result.next_page_token
 
 
 @celery_app.task(bind=True, max_retries=3, name="app.tasks.gmail_tasks.process_gmail_notification")
