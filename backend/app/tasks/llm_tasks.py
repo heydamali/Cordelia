@@ -86,5 +86,20 @@ def process_conversation_with_llm(self, conversation_id: str, user_id: str) -> N
             conversation_id,
             len(upserted),
         )
+
+        # Prune conversations that yielded no actionable tasks (spam / promotions).
+        # Deleting the Conversation cascades to its Messages via "all, delete-orphan".
+        remaining = db.query(Task).filter(Task.conversation_id == conversation_id).count()
+        if remaining == 0:
+            conversation_obj = (
+                db.query(Conversation).filter(Conversation.id == conversation_id).first()
+            )
+            if conversation_obj:
+                db.delete(conversation_obj)
+                db.commit()
+                logger.info(
+                    "process_conversation_with_llm: pruned spam conversation=%s",
+                    conversation_id,
+                )
     finally:
         db.close()

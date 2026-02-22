@@ -224,3 +224,97 @@ class TestProcessConversationWithLLM:
         existing_keys = call_args[2]
         assert set(existing_keys) == {"reply-alice", "schedule-meeting"}
         db.close.assert_called_once()
+
+    @patch("app.tasks.llm_tasks.task_engine")
+    @patch("app.tasks.llm_tasks.llm_processor")
+    @patch("app.tasks.llm_tasks.SessionLocal")
+    def test_all_ignored_prunes_conversation(
+        self, mock_session_local, mock_llm_processor, mock_task_engine
+    ):
+        """When no tasks remain after upsert, the conversation is deleted (cascades to messages)."""
+        db = MagicMock()
+        mock_session_local.return_value = db
+
+        conversation = _make_conversation()
+        db.query.return_value.filter.return_value.first.return_value = conversation
+        db.query.return_value.filter.return_value.order_by.return_value.all.return_value = [
+            _make_message()
+        ]
+        db.query.return_value.filter.return_value.all.return_value = []
+        db.query.return_value.filter.return_value.count.return_value = 0  # no tasks remain
+
+        mock_llm_processor.process_conversation.return_value = (
+            [],
+            '{"tasks": []}',
+            {"input_tokens": 5, "output_tokens": 5},
+        )
+        mock_llm_processor._MODEL = "claude-haiku-4-5-20251001"
+        mock_task_engine.upsert_tasks.return_value = []
+
+        from app.tasks.llm_tasks import process_conversation_with_llm
+        process_conversation_with_llm("conv-1", "user-1")
+
+        db.delete.assert_called_once_with(conversation)
+        db.commit.assert_called()
+        db.close.assert_called_once()
+
+    @patch("app.tasks.llm_tasks.task_engine")
+    @patch("app.tasks.llm_tasks.llm_processor")
+    @patch("app.tasks.llm_tasks.SessionLocal")
+    def test_actionable_tasks_prevent_prune(
+        self, mock_session_local, mock_llm_processor, mock_task_engine
+    ):
+        """When tasks remain in DB after upsert, the conversation is NOT deleted."""
+        db = MagicMock()
+        mock_session_local.return_value = db
+
+        conversation = _make_conversation()
+        db.query.return_value.filter.return_value.first.return_value = conversation
+        db.query.return_value.filter.return_value.order_by.return_value.all.return_value = [
+            _make_message()
+        ]
+        db.query.return_value.filter.return_value.all.return_value = []
+        db.query.return_value.filter.return_value.count.return_value = 1  # task remains
+
+        mock_llm_processor.process_conversation.return_value = (
+            [LLMTask(task_key="reply-john", title="Reply", category="reply", priority="high")],
+            '{"tasks": [...]}',
+            {"input_tokens": 10, "output_tokens": 20},
+        )
+        mock_llm_processor._MODEL = "claude-haiku-4-5-20251001"
+        mock_task_engine.upsert_tasks.return_value = [MagicMock()]
+
+        from app.tasks.llm_tasks import process_conversation_with_llm
+        process_conversation_with_llm("conv-1", "user-1")
+
+        db.delete.assert_not_called()
+        db.close.assert_called_once()
+
+    @patch("app.tasks.llm_tasks.task_engine")
+    @patch("app.tasks.llm_tasks.llm_processor")
+    @patch("app.tasks.llm_tasks.SessionLocal")
+    def test_prune_conversation_missing_is_handled_gracefully(
+        self, mock_session_local, mock_llm_processor, mock_task_engine
+    ):
+        """If the conversation is gone during the prune step, no exception is raised."""
+        db = MagicMock()
+        mock_session_local.return_value = db
+
+        conversation = _make_conversation()
+        # First .first() → conversation found; second .first() (prune lookup) → None
+        db.query.return_value.filter.return_value.first.side_effect = [conversation, None]
+        db.query.return_value.filter.return_value.order_by.return_value.all.return_value = [
+            _make_message()
+        ]
+        db.query.return_value.filter.return_value.all.return_value = []
+        db.query.return_value.filter.return_value.count.return_value = 0
+
+        mock_llm_processor.process_conversation.return_value = ([], "", {})
+        mock_llm_processor._MODEL = "claude-haiku-4-5-20251001"
+        mock_task_engine.upsert_tasks.return_value = []
+
+        from app.tasks.llm_tasks import process_conversation_with_llm
+        process_conversation_with_llm("conv-1", "user-1")
+
+        db.delete.assert_not_called()
+        db.close.assert_called_once()

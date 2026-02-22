@@ -47,18 +47,21 @@ def _build_ingest_payload(thread, user_id: str) -> IngestRequestSchema:
 
 
 # Progressively wider search windows for the initial sync.
+# All windows are always run — the threshold check is intentionally omitted because
+# the LLM classification is async and we cannot know at ingest time which threads will
+# yield actionable tasks vs. spam/promotions. Stopping early on raw thread count causes
+# the sync to halt as soon as it hits enough LinkedIn/newsletter threads, skipping real emails.
 _INITIAL_SYNC_WINDOWS: list[str] = ["newer_than:1d", "newer_than:3d", "newer_than:7d"]
-# Minimum threads ingested before we consider the screen "fillable" and stop expanding.
-_INITIAL_SYNC_MIN_THREADS: int = 5
 
 
 @celery_app.task(name="app.tasks.gmail_tasks.initial_gmail_sync")
 def initial_gmail_sync(user_id: str) -> None:
-    """Progressively fetch recent Gmail threads for a brand-new user.
+    """Fetch the last 7 days of Gmail threads for a brand-new user in three passes.
 
-    Starts with the past 24 hours. If fewer than _INITIAL_SYNC_MIN_THREADS unique
-    threads are found, expands to 3 days, then 7 days, stopping as soon as the
-    threshold is met or all windows are exhausted.
+    Runs 24h → 3d → 7d windows in order. Each pass only processes threads not
+    already seen by a narrower window (deduplication via seen_thread_ids). All
+    windows are always attempted so that actionable emails are not missed because
+    earlier windows were saturated with spam/promotions.
     """
     db: Session = SessionLocal()
     try:
@@ -89,8 +92,6 @@ def initial_gmail_sync(user_id: str) -> None:
                 "initial_gmail_sync: query=%s seen=%d user=%s",
                 query, len(seen_thread_ids), user_id,
             )
-            if len(seen_thread_ids) >= _INITIAL_SYNC_MIN_THREADS:
-                break
 
         logger.info(
             "initial_gmail_sync: complete – processed %d threads for new user %s",

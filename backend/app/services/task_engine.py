@@ -39,10 +39,11 @@ def upsert_tasks(
     """Idempotently upsert LLM tasks into the DB, applying priority/status rules.
 
     Upsert rules:
-    - No existing row  → INSERT; status=ignored if category=ignored, else pending
+    - No existing row + ignored category → skip; caller prunes conversation if no tasks remain
+    - No existing row + actionable       → INSERT with status=pending
     - pending          → UPDATE title/summary/due_at/notify_at; priority only bumps UP
     - done / snoozed   → UPDATE llm_model + raw_llm_output only
-    - ignored          → no-op, skip entirely
+    - ignored (legacy) → DELETE the row; caller prunes conversation if no tasks remain
     """
     now = datetime.now(timezone.utc)
 
@@ -58,7 +59,8 @@ def upsert_tasks(
         existing = existing_rows.get(llm_task.task_key)
 
         if existing is None:
-            status = "ignored" if llm_task.category == "ignored" else "pending"
+            if llm_task.category == "ignored":
+                continue  # never persist ignored tasks
             task = Task(
                 user_id=user_id,
                 conversation_id=conversation_id,
@@ -68,7 +70,7 @@ def upsert_tasks(
                 priority=llm_task.priority,
                 summary=llm_task.summary,
                 due_at=_parse_due_at(llm_task.due_at),
-                status=status,
+                status="pending",
                 ignore_reason=llm_task.ignore_reason,
                 llm_model=llm_model,
                 raw_llm_output=raw_llm_output,
@@ -81,7 +83,7 @@ def upsert_tasks(
             results.append(task)
 
         elif existing.status == "ignored":
-            # No-op — skip entirely
+            db.delete(existing)  # remove legacy ignored row
             continue
 
         elif existing.status in ("done", "snoozed"):

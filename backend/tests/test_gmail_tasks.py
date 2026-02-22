@@ -426,22 +426,32 @@ class TestInitialGmailSync:
         mock_db.close.assert_called_once()
 
     def test_success_fetches_all_threads_and_queues_llm(self):
-        """When the 24h window meets the threshold, only that window is used."""
+        """All 3 windows are always run; threads already seen are deduplicated."""
         user = _make_mock_user()
-        # 5 threads meets _INITIAL_SYNC_MIN_THREADS → stops after first window
-        thread_result = self._make_thread_list_result(["t1", "t2", "t3", "t4", "t5"])
+        # Window 1 returns 2 threads; windows 2 and 3 return same 2 (already seen)
+        result = self._make_thread_list_result(["t1", "t2"])
+        empty = self._make_thread_list_result([])
 
         connector = MagicMock()
-        connector.list_threads.return_value = thread_result
+        connector.list_threads.side_effect = [result, empty, empty]
         connector.get_thread.return_value = _make_thread_detail()
 
         _, mock_ingest, mock_llm = self._run(user=user, connector=connector)
 
-        connector.list_threads.assert_called_once_with(
+        # All 3 windows attempted
+        assert connector.list_threads.call_count == 3
+        connector.list_threads.assert_any_call(
             query="newer_than:1d", max_results=50, page_token=None
         )
-        assert connector.get_thread.call_count == 5
-        assert mock_ingest.call_count == 5
+        connector.list_threads.assert_any_call(
+            query="newer_than:3d", max_results=50, page_token=None
+        )
+        connector.list_threads.assert_any_call(
+            query="newer_than:7d", max_results=50, page_token=None
+        )
+        # Only 2 unique threads ingested
+        assert connector.get_thread.call_count == 2
+        assert mock_ingest.call_count == 2
         mock_llm.delay.assert_called()
 
     def test_list_threads_api_error_stops_loop_gracefully(self):
@@ -551,46 +561,42 @@ class TestInitialGmailSync:
 
         mock_db.close.assert_called_once()
 
-    # ── progressive backfill ──────────────────────────────────────────────────
+    # ── all-windows behaviour ─────────────────────────────────────────────────
 
-    def test_stops_at_first_window_when_threshold_met(self):
-        """5+ threads in the 24h window → no wider windows are attempted."""
+    def test_all_three_windows_always_run(self):
+        """All 3 windows are always attempted regardless of how many threads are found."""
         user = _make_mock_user()
-        result = self._make_thread_list_result(["t1", "t2", "t3", "t4", "t5"])
+        # Even 10 threads in the 24h window doesn't stop the wider windows
+        result = self._make_thread_list_result([f"t{i}" for i in range(10)])
+        empty = self._make_thread_list_result([])
 
         connector = MagicMock()
-        connector.list_threads.return_value = result
+        connector.list_threads.side_effect = [result, empty, empty]
         connector.get_thread.return_value = _make_thread_detail()
 
         self._run(user=user, connector=connector)
 
-        # Only one list_threads call — the 24h window
-        connector.list_threads.assert_called_once_with(
-            query="newer_than:1d", max_results=50, page_token=None
+        assert connector.list_threads.call_count == 3
+        connector.list_threads.assert_any_call(
+            query="newer_than:7d", max_results=50, page_token=None
         )
 
-    def test_extends_to_next_window_when_threshold_not_met(self):
-        """2 threads in 24h → extends to 3d; 3 new threads there → threshold met, stops."""
+    def test_wider_windows_find_threads_missed_by_24h(self):
+        """Threads only present in the 3d/7d windows are ingested."""
         user = _make_mock_user()
 
         window_1d = self._make_thread_list_result(["t1", "t2"])
-        # 3d window includes t1+t2 (already seen) plus 3 new ones → 5 total
+        # 3d window reveals 3 extra threads beyond the 24h set
         window_3d = self._make_thread_list_result(["t1", "t2", "t3", "t4", "t5"])
+        empty = self._make_thread_list_result([])
 
         connector = MagicMock()
-        connector.list_threads.side_effect = [window_1d, window_3d]
+        connector.list_threads.side_effect = [window_1d, window_3d, empty]
         connector.get_thread.return_value = _make_thread_detail()
 
         _, mock_ingest, _ = self._run(user=user, connector=connector)
 
-        assert connector.list_threads.call_count == 2
-        connector.list_threads.assert_any_call(
-            query="newer_than:1d", max_results=50, page_token=None
-        )
-        connector.list_threads.assert_any_call(
-            query="newer_than:3d", max_results=50, page_token=None
-        )
-        # 2 from window 1 + 3 new from window 2 = 5 total
+        # 2 from 24h + 3 new from 3d window = 5 total ingested
         assert mock_ingest.call_count == 5
 
     def test_deduplicates_threads_across_windows(self):
@@ -598,7 +604,6 @@ class TestInitialGmailSync:
         user = _make_mock_user()
 
         window_1d = self._make_thread_list_result(["t1", "t2"])
-        # 3d and 7d windows return the same 2 threads — nothing new
         overlap = self._make_thread_list_result(["t1", "t2"])
 
         connector = MagicMock()
@@ -607,7 +612,7 @@ class TestInitialGmailSync:
 
         _, mock_ingest, _ = self._run(user=user, connector=connector)
 
-        # All 3 windows tried (never reached threshold), but ingest called only twice
+        # All 3 windows tried; only 2 unique threads ingested (no duplicates)
         assert connector.list_threads.call_count == 3
         assert mock_ingest.call_count == 2
 
