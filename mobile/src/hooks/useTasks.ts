@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import { fetchTasks, updateTask } from '../api/client';
 import { Task, UpdateTaskBody } from '../types/task';
 
@@ -8,7 +8,10 @@ export function useTasks() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async (isRefresh = false) => {
+  const lastStatusRef = React.useRef<string | string[]>('pending');
+
+  const load = useCallback(async (status: string | string[] = 'pending', isRefresh = false) => {
+    lastStatusRef.current = status;
     if (isRefresh) {
       setRefreshing(true);
     } else {
@@ -16,8 +19,9 @@ export function useTasks() {
     }
     setError(null);
     try {
-      const data = await fetchTasks('pending');
-      setTasks(data);
+      const statusList = Array.isArray(status) ? status : [status];
+      const results = await Promise.all(statusList.map(s => fetchTasks(s)));
+      setTasks(results.flat()); // order preserved: first status's results come first
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load tasks');
     } finally {
@@ -28,13 +32,11 @@ export function useTasks() {
 
   const updateTaskStatus = useCallback(
     async (taskId: string, body: UpdateTaskBody) => {
-      // Optimistic remove from list immediately
       setTasks(prev => prev.filter(t => t.id !== taskId));
       try {
         await updateTask(taskId, body);
       } catch (e) {
-        // Reload on failure to restore accurate state
-        load();
+        load(lastStatusRef.current);
       }
     },
     [load],

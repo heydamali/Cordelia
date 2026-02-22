@@ -11,7 +11,7 @@ from app.schemas.tasks import TaskListResponseSchema, TaskSchema, TaskStatusUpda
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
-_VALID_STATUSES = {"pending", "done", "snoozed", "ignored", "all", "expired"}
+_VALID_STATUSES = {"pending", "done", "snoozed", "ignored", "all", "expired", "missed"}
 
 
 def _get_user(user_id: str, db: Session) -> User:
@@ -37,6 +37,25 @@ def list_tasks(
         )
 
     _get_user(user_id, db)
+
+    # Auto-transition past-due appointment tasks to missed
+    now = datetime.now(timezone.utc)
+    overdue_appts = (
+        db.query(Task)
+        .filter(
+            Task.user_id == user_id,
+            Task.status == "pending",
+            Task.category == "appointment",
+            Task.due_at.isnot(None),
+            Task.due_at < now,
+        )
+        .all()
+    )
+    if overdue_appts:
+        for t in overdue_appts:
+            t.status = "missed"
+            t.updated_at = now
+        db.commit()
 
     priority_rank = case({"high": 1, "medium": 2, "low": 3}, value=Task.priority)
 

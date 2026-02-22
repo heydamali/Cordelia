@@ -162,6 +162,129 @@ def test_get_tasks_status_all(client, db_session):
     assert resp.json()["total"] == 3
 
 
+# ---------------------------------------------------------------------------
+# GET /tasks — missed auto-transition
+# ---------------------------------------------------------------------------
+
+
+def test_past_due_appointment_is_auto_transitioned_to_missed(client, db_session):
+    """A pending appointment with due_at in the past is moved to missed on fetch."""
+    user = _make_user(db_session)
+    conv = _make_conversation(db_session, user)
+    appt = _make_task(
+        db_session, user, conv,
+        category="appointment",
+        status="pending",
+        due_at=datetime.now(timezone.utc) - timedelta(hours=1),
+    )
+
+    resp = client.get(f"/tasks?user_id={user.id}&status=pending")
+
+    assert resp.status_code == 200
+    ids = [t["id"] for t in resp.json()["tasks"]]
+    assert appt.id not in ids  # removed from pending
+
+    # Confirm it now appears under missed
+    resp2 = client.get(f"/tasks?user_id={user.id}&status=missed")
+    assert resp2.status_code == 200
+    assert resp2.json()["tasks"][0]["id"] == appt.id
+    assert resp2.json()["tasks"][0]["status"] == "missed"
+
+
+def test_past_due_appointment_excluded_from_pending(client, db_session):
+    """A non-appointment pending task alongside a past-due appointment:
+    only the appointment is removed from pending."""
+    user = _make_user(db_session)
+    conv = _make_conversation(db_session, user)
+    reply_task = _make_task(
+        db_session, user, conv,
+        category="reply",
+        status="pending",
+        due_at=datetime.now(timezone.utc) - timedelta(hours=2),
+    )
+    _make_task(
+        db_session, user, conv,
+        category="appointment",
+        status="pending",
+        due_at=datetime.now(timezone.utc) - timedelta(hours=2),
+    )
+
+    resp = client.get(f"/tasks?user_id={user.id}&status=pending")
+
+    assert resp.status_code == 200
+    ids = [t["id"] for t in resp.json()["tasks"]]
+    assert reply_task.id in ids  # reply stays pending (still actionable)
+    assert resp.json()["total"] == 1
+
+
+def test_past_due_non_appointment_stays_pending(client, db_session):
+    """reply and action tasks past their deadline are NOT auto-transitioned."""
+    user = _make_user(db_session)
+    conv = _make_conversation(db_session, user)
+    past_due = datetime.now(timezone.utc) - timedelta(days=1)
+
+    reply_task = _make_task(db_session, user, conv, category="reply",  status="pending", due_at=past_due)
+    action_task = _make_task(db_session, user, conv, category="action", status="pending", due_at=past_due)
+
+    resp = client.get(f"/tasks?user_id={user.id}&status=pending")
+
+    assert resp.status_code == 200
+    ids = [t["id"] for t in resp.json()["tasks"]]
+    assert reply_task.id in ids
+    assert action_task.id in ids
+
+
+def test_future_appointment_stays_pending(client, db_session):
+    """An appointment whose due_at is in the future is NOT transitioned to missed."""
+    user = _make_user(db_session)
+    conv = _make_conversation(db_session, user)
+    future_appt = _make_task(
+        db_session, user, conv,
+        category="appointment",
+        status="pending",
+        due_at=datetime.now(timezone.utc) + timedelta(days=1),
+    )
+
+    resp = client.get(f"/tasks?user_id={user.id}&status=pending")
+
+    assert resp.status_code == 200
+    ids = [t["id"] for t in resp.json()["tasks"]]
+    assert future_appt.id in ids
+
+
+def test_appointment_without_due_at_stays_pending(client, db_session):
+    """An appointment with no due_at is NOT auto-transitioned."""
+    user = _make_user(db_session)
+    conv = _make_conversation(db_session, user)
+    appt = _make_task(
+        db_session, user, conv,
+        category="appointment",
+        status="pending",
+        due_at=None,
+    )
+
+    resp = client.get(f"/tasks?user_id={user.id}&status=pending")
+
+    assert resp.status_code == 200
+    ids = [t["id"] for t in resp.json()["tasks"]]
+    assert appt.id in ids
+
+
+def test_missed_status_queryable(client, db_session):
+    """status=missed is a valid filter and returns only missed tasks."""
+    user = _make_user(db_session)
+    conv = _make_conversation(db_session, user)
+    missed_task = _make_task(db_session, user, conv, status="missed")
+    _make_task(db_session, user, conv, status="pending")
+
+    resp = client.get(f"/tasks?user_id={user.id}&status=missed")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["tasks"][0]["id"] == missed_task.id
+
+
 def test_get_tasks_status_expired_filter(client, db_session):
     """status=expired returns only expired tasks."""
     user = _make_user(db_session)

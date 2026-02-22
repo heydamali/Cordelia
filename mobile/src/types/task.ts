@@ -1,6 +1,6 @@
 export type TaskCategory = 'reply' | 'appointment' | 'action' | 'info' | 'ignored';
 export type TaskPriority = 'high' | 'medium' | 'low';
-export type TaskStatus = 'pending' | 'done' | 'snoozed' | 'ignored' | 'expired';
+export type TaskStatus = 'pending' | 'done' | 'snoozed' | 'ignored' | 'expired' | 'missed';
 
 export interface Task {
   id: string;

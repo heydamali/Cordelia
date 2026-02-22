@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -14,23 +14,45 @@ import { TaskCard } from '../components/TaskCard';
 import { SnoozeModal } from '../components/SnoozeModal';
 import { Task, TaskPriority } from '../types/task';
 
-type Filter = 'all' | TaskPriority;
+type TabKey = 'all' | TaskPriority | 'missed';
 
-const FILTERS: { key: Filter; label: string }[] = [
+const TABS: { key: TabKey; label: string }[] = [
   { key: 'all',    label: 'All' },
   { key: 'high',   label: '🔴 High' },
   { key: 'medium', label: '🟠 Med' },
   { key: 'low',    label: '🟢 Low' },
+  { key: 'missed', label: '⚫ Missed' },
 ];
+
+// Derive what to fetch from the active tab.
+// 'all'    → fetch missed + pending (merged, missed first)
+// priority → fetch pending (client-side priority filter)
+// 'missed' → fetch missed only
+function loadStatusFor(tab: TabKey): string | string[] {
+  if (tab === 'all')    return ['missed', 'pending'];
+  if (tab === 'missed') return 'missed';
+  return 'pending';
+}
 
 export function TaskListScreen() {
   const { tasks, loading, refreshing, error, load, updateTaskStatus } = useTasks();
   const [snoozingTask, setSnoozingTask] = useState<Task | null>(null);
-  const [filter, setFilter] = useState<Filter>('all');
+  const [activeTab, setActiveTab] = useState<TabKey>('high');
 
-  useEffect(() => { load(); }, [load]);
+  // loadMode changes only when switching between fetch-distinct categories
+  // (all / priority / missed). Switching High↔Med↔Low stays in 'priority'
+  // mode and never triggers a reload.
+  const loadMode = activeTab === 'all' ? 'all' : activeTab === 'missed' ? 'missed' : 'priority';
 
-  const visible = filter === 'all' ? tasks : tasks.filter(t => t.priority === filter);
+  useEffect(() => {
+    load(loadStatusFor(activeTab));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [load, loadMode]);
+
+  const visible = useMemo(() => {
+    if (loadMode === 'all' || loadMode === 'missed') return tasks;
+    return tasks.filter(t => t.priority === activeTab);
+  }, [tasks, loadMode, activeTab]);
 
   const handleDone = useCallback(
     (task: Task) => updateTaskStatus(task.id, { status: 'done' }),
@@ -50,6 +72,8 @@ export function TaskListScreen() {
     [updateTaskStatus],
   );
 
+  const isMissedView = activeTab === 'missed';
+
   return (
     <SafeAreaView style={styles.container}>
       {/* Header */}
@@ -60,16 +84,16 @@ export function TaskListScreen() {
         )}
       </View>
 
-      {/* Priority filter */}
+      {/* Tabs */}
       <View style={styles.filterRow}>
-        {FILTERS.map(f => (
+        {TABS.map(t => (
           <TouchableOpacity
-            key={f.key}
-            style={[styles.filterTab, filter === f.key && styles.filterTabActive]}
-            onPress={() => setFilter(f.key)}
+            key={t.key}
+            style={[styles.filterTab, activeTab === t.key && styles.filterTabActive]}
+            onPress={() => setActiveTab(t.key)}
           >
-            <Text style={[styles.filterText, filter === f.key && styles.filterTextActive]}>
-              {f.label}
+            <Text style={[styles.filterText, activeTab === t.key && styles.filterTextActive]}>
+              {t.label}
             </Text>
           </TouchableOpacity>
         ))}
@@ -79,7 +103,7 @@ export function TaskListScreen() {
       {error ? (
         <View style={styles.errorBanner}>
           <Text style={styles.errorText}>{error}</Text>
-          <TouchableOpacity onPress={() => load()}>
+          <TouchableOpacity onPress={() => load(loadStatusFor(activeTab))}>
             <Text style={styles.retryText}>Retry</Text>
           </TouchableOpacity>
         </View>
@@ -103,16 +127,16 @@ export function TaskListScreen() {
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
-              onRefresh={() => load(true)}
+              onRefresh={() => load(loadStatusFor(activeTab), true)}
               tintColor="#007AFF"
             />
           }
           contentContainerStyle={visible.length === 0 ? styles.emptyWrap : styles.list}
           ListEmptyComponent={
             <View style={styles.empty}>
-              <Text style={styles.emptyEmoji}>✅</Text>
-              <Text style={styles.emptyTitle}>All clear</Text>
-              <Text style={styles.emptySub}>No pending tasks right now.</Text>
+              <Text style={styles.emptyEmoji}>{isMissedView ? '📅' : '✅'}</Text>
+              <Text style={styles.emptyTitle}>{isMissedView ? 'Nothing missed' : 'All clear'}</Text>
+              <Text style={styles.emptySub}>{isMissedView ? 'No missed appointments.' : 'No pending tasks right now.'}</Text>
             </View>
           }
         />
