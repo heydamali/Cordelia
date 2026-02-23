@@ -77,9 +77,11 @@ class TestProcessConversationWithLLM:
         from app.tasks.llm_tasks import process_conversation_with_llm
         process_conversation_with_llm("conv-1", "user-1")
 
-        mock_llm_processor.process_conversation.assert_called_once_with(
-            conversation, [message], ["existing-key"]
-        )
+        mock_llm_processor.process_conversation.assert_called_once()
+        call_args, call_kwargs = mock_llm_processor.process_conversation.call_args
+        assert call_args == (conversation, [message], ["existing-key"])
+        assert "user_email" in call_kwargs
+        assert "user_name" in call_kwargs
         mock_task_engine.upsert_tasks.assert_called_once()
         db.close.assert_called_once()
 
@@ -301,8 +303,11 @@ class TestProcessConversationWithLLM:
         mock_session_local.return_value = db
 
         conversation = _make_conversation()
-        # First .first() → conversation found; second .first() (prune lookup) → None
-        db.query.return_value.filter.return_value.first.side_effect = [conversation, None]
+        user = MagicMock()
+        user.email = "test@example.com"
+        user.name = "Test"
+        # First .first() → conversation; second → user; third (prune lookup) → None
+        db.query.return_value.filter.return_value.first.side_effect = [conversation, user, None]
         db.query.return_value.filter.return_value.order_by.return_value.all.return_value = [
             _make_message()
         ]

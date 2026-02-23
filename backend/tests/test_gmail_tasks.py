@@ -29,9 +29,13 @@ def _make_mock_user(
     user_id: str = "user-1",
     history_id: str | None = "11111",
     has_token: bool = True,
+    email: str = "user@example.com",
+    name: str = "Test User",
 ) -> MagicMock:
     user = MagicMock()
     user.id = user_id
+    user.email = email
+    user.name = name
     user.gmail_history_id = history_id
     user.gmail_watch_expiry = None
     user.encrypted_refresh_token = "encrypted-token" if has_token else None

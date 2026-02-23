@@ -23,8 +23,18 @@ from app.tasks.llm_tasks import process_conversation_with_llm
 logger = logging.getLogger(__name__)
 
 
-def _build_ingest_payload(thread, user_id: str) -> IngestRequestSchema:
+def _build_ingest_payload(thread, user_id: str, user_email: str) -> IngestRequestSchema:
     """Build an IngestRequestSchema from a ThreadDetail."""
+
+    def _recipient_role(msg, user_email: str) -> str:
+        """Return 'to', 'cc', or 'other' based on where the user appears."""
+        email_lower = user_email.lower()
+        if any(addr.email.lower() == email_lower for addr in msg.to):
+            return "to"
+        if any(addr.email.lower() == email_lower for addr in msg.cc):
+            return "cc"
+        return "other"
+
     return IngestRequestSchema(
         source="gmail",
         user_id=user_id,
@@ -38,8 +48,11 @@ def _build_ingest_payload(thread, user_id: str) -> IngestRequestSchema:
                 body_text=msg.body_plain,
                 body_html=msg.body_html,
                 sent_at=msg.date,
-                is_from_user=False,
-                raw_metadata={"labels": msg.labels},
+                is_from_user=msg.sender.email.lower() == user_email.lower(),
+                raw_metadata={
+                    "labels": msg.labels,
+                    "recipient_role": _recipient_role(msg, user_email),
+                },
             )
             for msg in thread.messages
         ],
@@ -80,7 +93,7 @@ def initial_gmail_sync(user_id: str) -> None:
 
         for query in _INITIAL_SYNC_WINDOWS:
             try:
-                _ingest_window(db, connector, user_id, query, seen_thread_ids)
+                _ingest_window(db, connector, user_id, user.email, query, seen_thread_ids)
             except GmailAuthError as exc:
                 logger.error(
                     "initial_gmail_sync: auth error on query=%s for user %s: %s",
@@ -105,6 +118,7 @@ def _ingest_window(
     db: Session,
     connector: GmailConnector,
     user_id: str,
+    user_email: str,
     query: str,
     seen_thread_ids: set[str],
 ) -> None:
@@ -135,7 +149,7 @@ def _ingest_window(
             seen_thread_ids.add(summary.thread_id)
             try:
                 thread = connector.get_thread(summary.thread_id)
-                payload = _build_ingest_payload(thread, user_id)
+                payload = _build_ingest_payload(thread, user_id, user_email)
                 conversation = ingest(db, payload)
                 process_conversation_with_llm.delay(conversation.id, user_id)
             except (GmailAuthError, GmailAPIError) as exc:
@@ -199,7 +213,7 @@ def process_gmail_notification(self, user_id: str, notification_history_id: str)
                 seen_thread_ids.add(thread_id)
                 try:
                     thread = connector.get_thread(thread_id)
-                    payload = _build_ingest_payload(thread, user_id)
+                    payload = _build_ingest_payload(thread, user_id, user.email)
                     conversation = ingest(db, payload)
                     logger.info(
                         "stored thread %s for user %s (%d messages)",

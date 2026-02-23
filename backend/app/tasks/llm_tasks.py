@@ -10,6 +10,7 @@ from app.database import SessionLocal
 from app.models.conversation import Conversation
 from app.models.message import Message
 from app.models.task import Task
+from app.models.user import User
 from app.services import llm_processor, task_engine
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,10 @@ def process_conversation_with_llm(self, conversation_id: str, user_id: str) -> N
             )
             return
 
+        user = db.query(User).filter(User.id == user_id).first()
+        user_email = user.email if user else "unknown"
+        user_name = user.name if user else None
+
         existing_task_keys = [
             t.task_key
             for t in db.query(Task).filter(Task.conversation_id == conversation_id).all()
@@ -54,7 +59,8 @@ def process_conversation_with_llm(self, conversation_id: str, user_id: str) -> N
 
         try:
             llm_tasks, raw_text, usage = llm_processor.process_conversation(
-                conversation, messages, existing_task_keys
+                conversation, messages, existing_task_keys,
+                user_email=user_email, user_name=user_name,
             )
         except ValueError as exc:
             logger.error(

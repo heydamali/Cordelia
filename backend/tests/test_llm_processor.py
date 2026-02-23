@@ -21,18 +21,23 @@ def _make_conversation(subject: str = "Test Subject") -> MagicMock:
     return conv
 
 
-def _make_message(is_from_user: bool = False, body: str = "Hello") -> MagicMock:
+def _make_message(
+    is_from_user: bool = False,
+    body: str = "Hello",
+    recipient_role: str = "to",
+) -> MagicMock:
     msg = MagicMock()
     msg.is_from_user = is_from_user
     msg.sender_handle = "sender@example.com"
     msg.sender_name = "Sender"
     msg.body_text = body
     msg.sent_at = datetime(2026, 2, 20, tzinfo=timezone.utc)
+    msg.raw_metadata = {"labels": [], "recipient_role": recipient_role}
     return msg
 
 
 # ---------------------------------------------------------------------------
-# build_prompt — TODAY injection
+# build_prompt — header lines
 # ---------------------------------------------------------------------------
 
 
@@ -81,6 +86,34 @@ class TestBuildPrompt:
         msg = _make_message(body="Please reply to this email.")
         prompt = build_prompt(conv, [msg], [])
         assert "Please reply to this email." in prompt
+
+    def test_user_identity_included(self):
+        """USER_IDENTITY line appears with email and name."""
+        conv = _make_conversation()
+        prompt = build_prompt(
+            conv, [], [], user_email="alice@example.com", user_name="Alice"
+        )
+        assert "USER_IDENTITY: Alice <alice@example.com>" in prompt
+
+    def test_user_identity_email_only(self):
+        """USER_IDENTITY shows just email when name is None."""
+        conv = _make_conversation()
+        prompt = build_prompt(conv, [], [], user_email="alice@example.com")
+        assert "USER_IDENTITY: alice@example.com" in prompt
+
+    def test_recipient_role_included(self):
+        """RECIPIENT_ROLE appears on each message line."""
+        conv = _make_conversation()
+        msg = _make_message(recipient_role="cc")
+        prompt = build_prompt(conv, [msg], [])
+        assert "RECIPIENT_ROLE: cc" in prompt
+
+    def test_email_body_wrapped_in_xml_tags(self):
+        """Email body is wrapped in <email_body> tags for injection protection."""
+        conv = _make_conversation()
+        msg = _make_message(body="Some email content")
+        prompt = build_prompt(conv, [msg], [])
+        assert "<email_body>Some email content</email_body>" in prompt
 
 
 # ---------------------------------------------------------------------------
