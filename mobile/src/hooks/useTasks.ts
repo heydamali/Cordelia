@@ -68,7 +68,7 @@ export function useTasks(userId: string) {
     if (loadingRef.current.has(key)) return;
 
     const current = pools[tab];
-    if (!current.hasMore) return;
+    if (!current.hasMore || !current.loaded) return;
 
     loadingRef.current.add(key);
     setTabLoading(true);
@@ -126,6 +126,29 @@ export function useTasks(userId: string) {
     }
   }, [userId]);
 
+  const silentRefreshTab = useCallback(async (tab: TabKey, pageSize: number) => {
+    const key = `silent:${tab}`;
+    if (loadingRef.current.has(key)) return;
+    loadingRef.current.add(key);
+    try {
+      const { status, priority } = tabFetchArgs(tab);
+      const result = await fetchTasks(userId, status, { limit: pageSize, offset: 0, priority });
+      setPools(prev => ({
+        ...prev,
+        [tab]: {
+          tasks: result.tasks,
+          offset: result.tasks.length,
+          hasMore: result.has_more,
+          loaded: true,
+        },
+      }));
+    } catch {
+      // Silently ignore poll failures
+    } finally {
+      loadingRef.current.delete(key);
+    }
+  }, [userId]);
+
   const updateTaskStatus = useCallback(
     async (taskId: string, body: UpdateTaskBody) => {
       // Optimistically remove from all pools
@@ -161,6 +184,7 @@ export function useTasks(userId: string) {
     loadMoreTab,
     loadMoreAll,
     refreshTab,
+    silentRefreshTab,
     updateTaskStatus,
   };
 }

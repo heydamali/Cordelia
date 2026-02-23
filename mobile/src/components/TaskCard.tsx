@@ -53,21 +53,25 @@ export function TaskCard({ task, onDone, onSnooze, onIgnore, showHint, onHintSho
   useEffect(() => {
     if (!showHint) return;
 
-    offsetX.value = withSequence(
-      withTiming(-55, { duration: 300 }),   // peek right actions
-      withTiming(0,   { duration: 250 }),
-      withDelay(200,
-        withSequence(
-          withTiming(55, { duration: 300 }), // peek left action
-          withTiming(0,  { duration: 250 }),
+    offsetX.value = withDelay(1000,
+      withSequence(
+        withTiming(-55, { duration: 450 }),  // peek right actions
+        withTiming(-55, { duration: 120 }),  // hold briefly so user sees it
+        withTiming(0,   { duration: 350 }),
+        withDelay(450,
+          withSequence(
+            withTiming(55, { duration: 450 }), // peek left action
+            withTiming(55, { duration: 120 }), // hold briefly
+            withTiming(0,  { duration: 350 }),
+          ),
         ),
       ),
     );
 
-    // Mark hint as shown after animation completes (~1300ms total)
+    // Mark hint as shown after animation completes (~3300ms total)
     const timer = setTimeout(() => {
       onHintShown?.();
-    }, 1300);
+    }, 3300);
     return () => clearTimeout(timer);
   }, [showHint]); // eslint-disable-line react-hooks/exhaustive-deps
 

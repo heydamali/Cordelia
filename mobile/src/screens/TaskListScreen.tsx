@@ -50,6 +50,7 @@ export function TaskListScreen({ userId, onSignOut }: Props) {
     loadMoreTab,
     loadMoreAll,
     refreshTab,
+    silentRefreshTab,
     updateTaskStatus,
   } = useTasks(userId);
 
@@ -57,6 +58,14 @@ export function TaskListScreen({ userId, onSignOut }: Props) {
 
   const [snoozingTask, setSnoozingTask] = useState<Task | null>(null);
   const [activeTab, setActiveTab] = useState<TabKey>('high');
+  const [hasRefreshed, setHasRefreshed] = useState(false);
+  const [dotCount, setDotCount] = useState(1);
+  const pollAttemptsRef = useRef(0);
+
+  useEffect(() => {
+    const id = setInterval(() => setDotCount(c => (c === 4 ? 1 : c + 1)), 500);
+    return () => clearInterval(id);
+  }, []);
 
   // Auto sign-out when the session is invalid (user deleted from DB)
   useEffect(() => {
@@ -120,6 +129,25 @@ export function TaskListScreen({ userId, onSignOut }: Props) {
     );
   }, [pools]);
 
+  // Background poll while empty — retries every 5s for up to 60s, then gives up
+  useEffect(() => {
+    if (visible.length > 0 || hasRefreshed) return;
+    pollAttemptsRef.current = 0;
+    const tabs: PoolTabKey[] = activeTab === 'all'
+      ? ['high', 'medium', 'low', 'missed']
+      : [activeTab as PoolTabKey];
+    const id = setInterval(() => {
+      pollAttemptsRef.current += 1;
+      if (pollAttemptsRef.current >= 12) {
+        clearInterval(id);
+        setHasRefreshed(true);
+        return;
+      }
+      tabs.forEach(t => silentRefreshTab(t, pageSize));
+    }, 5000);
+    return () => clearInterval(id);
+  }, [visible.length, hasRefreshed, activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleDone = useCallback(
     (task: Task) => updateTaskStatus(task.id, { status: 'done' }),
     [updateTaskStatus],
@@ -147,6 +175,7 @@ export function TaskListScreen({ userId, onSignOut }: Props) {
   }, [activeTab, pageSize, loadMoreAll, loadMoreTab]);
 
   const handleRefresh = useCallback(() => {
+    setHasRefreshed(true);
     if (activeTab === 'all') {
       const poolTabs: PoolTabKey[] = ['high', 'medium', 'low', 'missed'];
       for (const tab of poolTabs) {
@@ -212,7 +241,7 @@ export function TaskListScreen({ userId, onSignOut }: Props) {
               onDone={() => handleDone(item)}
               onSnooze={() => setSnoozingTask(item)}
               onIgnore={() => handleIgnore(item)}
-              showHint={shouldShow && index === 0}
+              showHint={shouldShow && index === 0 && !tabLoading}
               onHintShown={markShown}
             />
           )}
@@ -233,9 +262,20 @@ export function TaskListScreen({ userId, onSignOut }: Props) {
           contentContainerStyle={visible.length === 0 ? styles.emptyWrap : styles.list}
           ListEmptyComponent={
             <View style={styles.empty}>
-              <Text style={styles.emptyEmoji}>{isMissedView ? '📅' : '✅'}</Text>
-              <Text style={styles.emptyTitle}>{isMissedView ? 'Nothing missed' : 'All clear'}</Text>
-              <Text style={styles.emptySub}>{isMissedView ? 'No missed appointments.' : 'No pending tasks right now.'}</Text>
+              {!hasRefreshed && !isMissedView ? (
+                <>
+                  <ActivityIndicator size="large" color="#007AFF" style={{ marginBottom: 16 }} />
+                  <Text style={styles.emptyTitle}>
+                    {'Pulling in your tasks' + '.'.repeat(dotCount)}
+                  </Text>
+                </>
+              ) : (
+                <>
+                  <Text style={styles.emptyEmoji}>{isMissedView ? '📅' : '✅'}</Text>
+                  <Text style={styles.emptyTitle}>{isMissedView ? 'Nothing missed' : 'All clear'}</Text>
+                  <Text style={styles.emptySub}>{isMissedView ? 'No missed appointments.' : 'No pending tasks right now.'}</Text>
+                </>
+              )}
             </View>
           }
         />
