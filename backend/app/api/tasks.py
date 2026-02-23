@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.task import Task
 from app.models.user import User
+from app.models.user_source_setting import UserSourceSetting
 from app.schemas.tasks import TaskListResponseSchema, TaskSchema, TaskStatusUpdateSchema
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -27,6 +28,7 @@ def list_tasks(
     status: str = Query("pending", description="Filter by status: pending/done/snoozed/ignored/expired/all"),
     category: str | None = Query(None, description="Filter by category, e.g. reply, appointment"),
     priority: str | None = Query(None, description="Filter by priority: high/medium/low"),
+    source: str | None = Query(None, description="Filter by source: gmail, google_calendar"),
     limit: int = Query(20, ge=1, le=100, description="Maximum number of tasks to return"),
     offset: int = Query(0, ge=0, description="Number of tasks to skip"),
     db: Session = Depends(get_db),
@@ -71,6 +73,19 @@ def list_tasks(
 
     if priority is not None:
         query = query.filter(Task.priority == priority)
+
+    if source is not None:
+        query = query.filter(Task.source == source)
+    else:
+        # Auto-filter to tasks from enabled sources only
+        enabled_sources = (
+            db.query(UserSourceSetting.source)
+            .filter(UserSourceSetting.user_id == user_id, UserSourceSetting.enabled.is_(True))
+            .all()
+        )
+        enabled = [row[0] for row in enabled_sources]
+        if enabled:
+            query = query.filter(Task.source.in_(enabled))
 
     base_query = query.order_by(
         priority_rank,

@@ -4,12 +4,13 @@ import base64
 import json
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import get_db
 from app.models.user import User
+from app.models.user_source_setting import UserSourceSetting
 
 logger = logging.getLogger(__name__)
 
@@ -55,9 +56,61 @@ async def gmail_webhook(
         logger.warning("gmail_webhook: no user found for email %s", email_address)
         return {"status": "ok"}
 
+    # Check if Gmail source is enabled for this user
+    source_setting = (
+        db.query(UserSourceSetting)
+        .filter(UserSourceSetting.user_id == user.id, UserSourceSetting.source == "gmail")
+        .first()
+    )
+    if source_setting and not source_setting.enabled:
+        logger.info("gmail_webhook: gmail disabled for user %s, skipping", user.id)
+        return {"status": "ok"}
+
     from app.tasks.gmail_tasks import process_gmail_notification
     process_gmail_notification.delay(user.id, str(history_id))
     logger.info("gmail_webhook: enqueued notification for user %s, historyId=%s", user.id, history_id)
 
     # Always return 200; non-2xx causes Pub/Sub to retry infinitely
+    return {"status": "ok"}
+
+
+@router.post("/calendar")
+async def calendar_webhook(
+    request: Request,
+    x_goog_channel_id: str | None = Header(None),
+    x_goog_resource_id: str | None = Header(None),
+    x_goog_resource_state: str | None = Header(None),
+    db: Session = Depends(get_db),
+):
+    """Receive Google Calendar push notifications via direct webhook."""
+    if not x_goog_channel_id:
+        logger.warning("calendar_webhook: missing X-Goog-Channel-ID header")
+        return {"status": "ok"}
+
+    # Google sends a "sync" message when the watch is first created — acknowledge it
+    if x_goog_resource_state == "sync":
+        logger.info("calendar_webhook: sync message for channel %s", x_goog_channel_id)
+        return {"status": "ok"}
+
+    # Look up the user by channel_id stored in sync_cursor
+    setting = (
+        db.query(UserSourceSetting)
+        .filter(
+            UserSourceSetting.source == "google_calendar",
+            UserSourceSetting.sync_cursor.contains(x_goog_channel_id),
+        )
+        .first()
+    )
+    if setting is None:
+        logger.warning("calendar_webhook: no user found for channel %s", x_goog_channel_id)
+        return {"status": "ok"}
+
+    if not setting.enabled:
+        logger.info("calendar_webhook: calendar disabled for user %s, skipping", setting.user_id)
+        return {"status": "ok"}
+
+    from app.tasks.calendar_tasks import process_calendar_notification
+    process_calendar_notification.delay(setting.user_id)
+    logger.info("calendar_webhook: enqueued notification for user %s", setting.user_id)
+
     return {"status": "ok"}

@@ -85,6 +85,7 @@ def process_conversation_with_llm(self, conversation_id: str, user_id: str) -> N
             llm_tasks=llm_tasks,
             raw_llm_output=raw_llm_output,
             llm_model=llm_processor._MODEL,
+            source=conversation.source,
         )
 
         logger.info(

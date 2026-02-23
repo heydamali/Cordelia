@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, String, Text, DateTime, UniqueConstraint, ForeignKey
+from sqlalchemy import JSON, String, Text, DateTime, UniqueConstraint, ForeignKey, Index
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -33,6 +33,7 @@ class Task(Base):
     raw_llm_output: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     notify_at: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     notifications_sent: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    source: Mapped[str] = mapped_column(String(50), nullable=False, default="gmail")
     snoozed_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False

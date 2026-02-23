@@ -12,10 +12,19 @@ import {
   AppStateStatus,
   useWindowDimensions,
 } from 'react-native';
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withTiming,
+  withSequence,
+  withDelay,
+  Easing,
+} from 'react-native-reanimated';
 import { useTasks } from '../hooks/useTasks';
 import { useSwipeHint } from '../hooks/useSwipeHint';
 import { TaskCard } from '../components/TaskCard';
 import { SnoozeModal } from '../components/SnoozeModal';
+import { SettingsModal } from '../components/SettingsModal';
 import { Task, TaskPriority } from '../types/task';
 
 interface Props {
@@ -57,15 +66,12 @@ export function TaskListScreen({ userId, onSignOut }: Props) {
   const { shouldShow, markShown, checkHint } = useSwipeHint();
 
   const [snoozingTask, setSnoozingTask] = useState<Task | null>(null);
+  const [settingsVisible, setSettingsVisible] = useState(false);
   const [activeTab, setActiveTab] = useState<TabKey>('high');
   const [hasRefreshed, setHasRefreshed] = useState(false);
-  const [dotCount, setDotCount] = useState(1);
-  const pollAttemptsRef = useRef(0);
-
-  useEffect(() => {
-    const id = setInterval(() => setDotCount(c => (c === 4 ? 1 : c + 1)), 500);
-    return () => clearInterval(id);
-  }, []);
+  const pullHintPlayed = useRef(false);
+  const pullHintY = useSharedValue(0);
+  const arrowOpacity = useSharedValue(1);
 
   // Auto sign-out when the session is invalid (user deleted from DB)
   useEffect(() => {
@@ -129,24 +135,41 @@ export function TaskListScreen({ userId, onSignOut }: Props) {
     );
   }, [pools]);
 
-  // Background poll while empty — retries every 5s for up to 60s, then gives up
+  // Pull-to-refresh teaching animation — two slow tugs when the list is empty
   useEffect(() => {
-    if (visible.length > 0 || hasRefreshed) return;
-    pollAttemptsRef.current = 0;
-    const tabs: PoolTabKey[] = activeTab === 'all'
-      ? ['high', 'medium', 'low', 'missed']
-      : [activeTab as PoolTabKey];
-    const id = setInterval(() => {
-      pollAttemptsRef.current += 1;
-      if (pollAttemptsRef.current >= 12) {
-        clearInterval(id);
-        setHasRefreshed(true);
-        return;
-      }
-      tabs.forEach(t => silentRefreshTab(t, pageSize));
-    }, 5000);
-    return () => clearInterval(id);
-  }, [visible.length, hasRefreshed, activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (visible.length > 0 || hasRefreshed || pullHintPlayed.current) return;
+    pullHintPlayed.current = true;
+
+    const slow = { duration: 600, easing: Easing.inOut(Easing.ease) };
+    const hold = { duration: 200 };
+    const retract = { duration: 500, easing: Easing.inOut(Easing.ease) };
+
+    pullHintY.value = withDelay(800,
+      withSequence(
+        withTiming(40, slow),       // tug 1 down
+        withTiming(40, hold),       // hold
+        withTiming(0, retract),     // release
+        withDelay(400,
+          withSequence(
+            withTiming(40, slow),   // tug 2 down
+            withTiming(40, hold),   // hold
+            withTiming(0, retract), // release
+          ),
+        ),
+      ),
+    );
+
+    // Fade out the arrow after the animation
+    arrowOpacity.value = withDelay(3600, withTiming(0, { duration: 400 }));
+  }, [visible.length, hasRefreshed]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const pullHintStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: pullHintY.value }],
+  }));
+
+  const arrowAnimStyle = useAnimatedStyle(() => ({
+    opacity: arrowOpacity.value,
+  }));
 
   const handleDone = useCallback(
     (task: Task) => updateTaskStatus(task.id, { status: 'done' }),
@@ -186,8 +209,15 @@ export function TaskListScreen({ userId, onSignOut }: Props) {
     }
   }, [activeTab, pageSize, refreshTab]);
 
+  const handleSourceToggled = useCallback(() => {
+    // Reset all pools so tasks refresh with new source filter
+    const poolTabs: PoolTabKey[] = ['high', 'medium', 'low', 'missed'];
+    for (const tab of poolTabs) {
+      refreshTab(tab, pageSize);
+    }
+  }, [refreshTab, pageSize]);
+
   const isMissedView = activeTab === 'missed';
-  const isLoading = tabLoading && visible.length === 0 && !error;
 
   return (
     <SafeAreaView style={styles.container}>
@@ -198,8 +228,8 @@ export function TaskListScreen({ userId, onSignOut }: Props) {
           <Text style={styles.badge}>{totalBadge}</Text>
         )}
         <View style={{ flex: 1 }} />
-        <TouchableOpacity onPress={onSignOut} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-          <Text style={styles.signOutText}>Sign out</Text>
+        <TouchableOpacity onPress={() => setSettingsVisible(true)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          <Text style={styles.gearIcon}>{'\u2699'}</Text>
         </TouchableOpacity>
       </View>
 
@@ -229,9 +259,7 @@ export function TaskListScreen({ userId, onSignOut }: Props) {
       ) : null}
 
       {/* Content */}
-      {isLoading ? (
-        <ActivityIndicator style={styles.spinner} size="large" color="#007AFF" />
-      ) : (
+      <Animated.View style={[{ flex: 1 }, visible.length === 0 && !hasRefreshed ? pullHintStyle : undefined]}>
         <FlatList
           data={visible}
           keyExtractor={t => t.id}
@@ -264,10 +292,11 @@ export function TaskListScreen({ userId, onSignOut }: Props) {
             <View style={styles.empty}>
               {!hasRefreshed && !isMissedView ? (
                 <>
-                  <ActivityIndicator size="large" color="#007AFF" style={{ marginBottom: 16 }} />
-                  <Text style={styles.emptyTitle}>
-                    {'Pulling in your tasks' + '.'.repeat(dotCount)}
-                  </Text>
+                  <Animated.View style={[styles.arrowWrap, arrowAnimStyle]}>
+                    <Text style={styles.pullArrow}>{'\u2193'}</Text>
+                  </Animated.View>
+                  <Text style={styles.emptyTitle}>Pull down to see your tasks</Text>
+                  <Text style={styles.emptySub}>We're gathering your emails and calendar events.</Text>
                 </>
               ) : (
                 <>
@@ -279,12 +308,20 @@ export function TaskListScreen({ userId, onSignOut }: Props) {
             </View>
           }
         />
-      )}
+      </Animated.View>
 
       <SnoozeModal
         visible={snoozingTask !== null}
         onClose={() => setSnoozingTask(null)}
         onSnooze={until => snoozingTask && handleSnooze(snoozingTask, until)}
+      />
+
+      <SettingsModal
+        visible={settingsVisible}
+        onClose={() => setSettingsVisible(false)}
+        userId={userId}
+        onSignOut={onSignOut}
+        onSourceToggled={handleSourceToggled}
       />
     </SafeAreaView>
   );
@@ -318,10 +355,9 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     overflow: 'hidden',
   },
-  signOutText: {
-    fontSize: 13,
+  gearIcon: {
+    fontSize: 22,
     color: '#8E8E93',
-    fontWeight: '500',
   },
   filterRow: {
     flexDirection: 'row',
@@ -367,9 +403,6 @@ const styles = StyleSheet.create({
     color: '#007AFF',
     marginLeft: 8,
   },
-  spinner: {
-    marginTop: 60,
-  },
   footerSpinner: {
     marginVertical: 16,
   },
@@ -384,6 +417,13 @@ const styles = StyleSheet.create({
   empty: {
     alignItems: 'center',
     paddingHorizontal: 32,
+  },
+  arrowWrap: {
+    marginBottom: 12,
+  },
+  pullArrow: {
+    fontSize: 32,
+    color: '#8E8E93',
   },
   emptyEmoji: {
     fontSize: 48,

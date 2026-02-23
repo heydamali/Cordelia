@@ -35,6 +35,7 @@ def upsert_tasks(
     llm_tasks: list[LLMTask],
     raw_llm_output: Any,
     llm_model: str,
+    source: str = "gmail",
 ) -> list[Task]:
     """Idempotently upsert LLM tasks into the DB, applying priority/status rules.
 
@@ -65,6 +66,7 @@ def upsert_tasks(
                 user_id=user_id,
                 conversation_id=conversation_id,
                 task_key=llm_task.task_key,
+                source=source,
                 title=llm_task.title,
                 category=llm_task.category,
                 priority=llm_task.priority,

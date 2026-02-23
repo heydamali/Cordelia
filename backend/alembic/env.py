@@ -11,6 +11,7 @@ from app.models.user import User  # noqa: F401
 from app.models.conversation import Conversation  # noqa: F401
 from app.models.message import Message  # noqa: F401
 from app.models.task import Task  # noqa: F401
+from app.models.user_source_setting import UserSourceSetting  # noqa: F401
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

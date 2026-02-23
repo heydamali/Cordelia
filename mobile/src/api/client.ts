@@ -1,5 +1,5 @@
 import { BASE_URL } from '../config';
-import { Task, TaskListResponse, UpdateTaskBody } from '../types/task';
+import { Task, TaskListResponse, UpdateTaskBody, SourceSetting } from '../types/task';
 
 // ngrok-skip-browser-warning bypasses the ngrok browser interstitial page
 const BASE_HEADERS = {
@@ -57,4 +57,24 @@ export async function registerPushToken(userId: string, pushToken: string): Prom
     body: JSON.stringify({ user_id: userId, push_token: pushToken }),
   });
   if (!res.ok) throw new Error(`registerPushToken failed: ${res.status}`);
+}
+
+export async function fetchSources(userId: string): Promise<SourceSetting[]> {
+  const res = await fetch(`${BASE_URL}/sources?user_id=${userId}`, { headers: BASE_HEADERS });
+  if (!res.ok) throw new Error(`fetchSources failed: ${res.status}`);
+  return res.json();
+}
+
+export async function toggleSource(
+  userId: string,
+  source: string,
+  enabled: boolean,
+): Promise<SourceSetting> {
+  const res = await fetch(`${BASE_URL}/sources/${source}?user_id=${userId}`, {
+    method: 'PATCH',
+    headers: BASE_HEADERS,
+    body: JSON.stringify({ enabled }),
+  });
+  if (!res.ok) throw new Error(`toggleSource failed: ${res.status}`);
+  return res.json();
 }

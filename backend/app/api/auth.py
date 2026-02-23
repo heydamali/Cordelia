@@ -1,4 +1,5 @@
 import base64
+import json
 import logging
 from datetime import datetime, timezone
 from urllib.parse import urlencode
@@ -12,8 +13,11 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
 from app.models.user import User
+from app.models.user_source_setting import UserSourceSetting
 from app.services.gmail_connector import GmailConnector, GmailAuthError, GmailAPIError
+from app.services.calendar_connector import CalendarConnector, CalendarAuthError, CalendarAPIError
 from app.tasks.gmail_tasks import initial_gmail_sync
+from app.tasks.calendar_tasks import initial_calendar_sync
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +25,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/calendar.readonly",
     "https://www.googleapis.com/auth/userinfo.email",
     "https://www.googleapis.com/auth/userinfo.profile",
     "openid",
@@ -97,19 +102,62 @@ def auth_google_callback(code: str, state: str | None = None, db: Session = Depe
     db.commit()
     db.refresh(user)
 
+    # Ensure UserSourceSetting rows exist for both sources
+    for source_key in ("gmail", "google_calendar"):
+        existing_setting = (
+            db.query(UserSourceSetting)
+            .filter(UserSourceSetting.user_id == user.id, UserSourceSetting.source == source_key)
+            .first()
+        )
+        if not existing_setting:
+            db.add(UserSourceSetting(user_id=user.id, source=source_key, enabled=True))
+    db.commit()
+
+    # Register Gmail watch
+    gmail_setting = (
+        db.query(UserSourceSetting)
+        .filter(UserSourceSetting.user_id == user.id, UserSourceSetting.source == "gmail")
+        .first()
+    )
     try:
         connector = GmailConnector(user=user)
         reg = connector.register_watch(topic_name=settings.PUBSUB_TOPIC)
         user.gmail_history_id = reg.history_id
-        user.gmail_watch_expiry = datetime.fromtimestamp(reg.expiration_ms / 1000, tz=timezone.utc)
+        watch_expiry = datetime.fromtimestamp(reg.expiration_ms / 1000, tz=timezone.utc)
+        user.gmail_watch_expiry = watch_expiry
+        if gmail_setting:
+            gmail_setting.sync_cursor = json.dumps({"history_id": reg.history_id})
+            gmail_setting.watch_expiry = watch_expiry
         db.commit()
     except (GmailAuthError, GmailAPIError) as exc:
-        logger.warning("failed to register watch for user %s: %s", user.id, exc)
-        # Don't fail the OAuth flow — Beat will renew it
+        logger.warning("failed to register Gmail watch for user %s: %s", user.id, exc)
+
+    # Register Calendar watch
+    cal_setting = (
+        db.query(UserSourceSetting)
+        .filter(UserSourceSetting.user_id == user.id, UserSourceSetting.source == "google_calendar")
+        .first()
+    )
+    try:
+        cal_connector = CalendarConnector(user=user)
+        channel_id = CalendarConnector.generate_channel_id()
+        webhook_base = settings.GOOGLE_REDIRECT_URI.rsplit("/", 2)[0]
+        cal_reg = cal_connector.register_watch(
+            channel_id=channel_id,
+            webhook_url=f"{webhook_base}/webhooks/calendar",
+        )
+        if cal_setting:
+            cal_setting.sync_cursor = json.dumps({"channel_id": channel_id})
+            cal_setting.watch_resource_id = cal_reg.resource_id
+            cal_setting.watch_expiry = datetime.fromtimestamp(cal_reg.expiration_ms / 1000, tz=timezone.utc)
+        db.commit()
+    except (CalendarAuthError, CalendarAPIError, ValueError) as exc:
+        logger.warning("failed to register Calendar watch for user %s: %s", user.id, exc)
 
     if was_new_user:
         initial_gmail_sync.delay(user.id)
-        logger.info("enqueued initial_gmail_sync for new user %s", user.id)
+        initial_calendar_sync.delay(user.id)
+        logger.info("enqueued initial syncs for new user %s", user.id)
 
     # Decode mobile redirect URI from state and redirect back to the app
     if state:

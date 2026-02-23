@@ -25,6 +25,11 @@ const CATEGORY_LABEL: Record<string, string> = {
   ignored:     'Ignored',
 };
 
+const SOURCE_ICON: Record<string, string> = {
+  gmail:           '\u2709',      // ✉
+  google_calendar: '\uD83D\uDCC5', // 📅
+};
+
 function formatDue(dueAt: string | null, status?: string): { text: string; overdue: boolean } | null {
   if (!dueAt) return null;
   const diffMins = Math.round((new Date(dueAt).getTime() - Date.now()) / 60_000);
@@ -133,6 +138,9 @@ export function TaskCard({ task, onDone, onSnooze, onIgnore, showHint, onHintSho
         <View style={styles.body}>
           <Text style={styles.title} numberOfLines={2}>{task.title}</Text>
           <View style={styles.meta}>
+            {task.source && SOURCE_ICON[task.source] && (
+              <Text style={styles.sourceIcon}>{SOURCE_ICON[task.source]}</Text>
+            )}
             <Text style={styles.category}>{CATEGORY_LABEL[task.category]}</Text>
             {due && (
               <Text style={[styles.due, due.overdue && styles.overdue]}>
@@ -193,6 +201,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: 4,
+  },
+  sourceIcon: {
+    fontSize: 11,
+    marginRight: 4,
   },
   category: {
     fontSize: 12,

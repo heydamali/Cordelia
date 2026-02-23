@@ -15,6 +15,7 @@ class TaskSchema(BaseModel):
     due_at: datetime | None
     status: str
     ignore_reason: str | None
+    source: str
     created_at: datetime
     updated_at: datetime
     snoozed_until: datetime | None
