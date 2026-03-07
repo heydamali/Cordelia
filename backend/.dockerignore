@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+.env.*
+celerybeat-schedule.db
+client_secret.json
+*.egg-info/
+.git/
+.gitignore

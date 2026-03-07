@@ -1,6 +1,7 @@
 import os
 
-os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+if os.getenv("ENVIRONMENT") == "development":
+    os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 
 from fastapi import FastAPI
 from app.api.auth import router as auth_router
