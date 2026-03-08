@@ -1,1 +1,1 @@
-export const BASE_URL = 'https://unactionable-millard-undamasked.ngrok-free.dev';
+export const BASE_URL = 'https://compassionate-expression-production.up.railway.app';
