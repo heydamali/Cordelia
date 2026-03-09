@@ -249,8 +249,18 @@ def build_prompt(
 
 
 def parse_llm_response(raw_text: str) -> LLMResponse:
-    """Strip accidental markdown fences, parse JSON, and validate with Pydantic."""
-    cleaned = re.sub(r"```(?:json)?\s*|\s*```", "", raw_text).strip()
+    """Extract the JSON object from the LLM response and validate with Pydantic.
+
+    Finds the outermost { ... } so trailing/leading text and markdown fences
+    are ignored regardless of where the model puts them.
+    """
+    start = raw_text.find("{")
+    end = raw_text.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        raise ValueError(
+            f"No JSON object found in LLM response\nRaw: {raw_text!r}"
+        )
+    cleaned = raw_text[start : end + 1]
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError as exc:
