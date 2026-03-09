@@ -5,6 +5,7 @@ import logging
 from datetime import datetime, timezone
 
 import redis as redis_module
+import sentry_sdk
 from celery import shared_task
 from sqlalchemy.orm import Session
 
@@ -291,6 +292,7 @@ def renew_all_watches() -> None:
                 logger.info("renewed Gmail watch for user %s", user.id)
             except (GmailAuthError, GmailAPIError, ValueError) as exc:
                 logger.warning("renew_all_watches: failed for user %s: %s", user.id, exc)
+                sentry_sdk.capture_exception(exc)
                 db.rollback()
     finally:
         db.close()
@@ -310,4 +312,5 @@ def _re_register_watch(user: User, db: Session, connector: GmailConnector) -> No
         logger.info("re-registered Gmail watch for user %s, new historyId=%s", user.id, reg.history_id)
     except (GmailAuthError, GmailAPIError) as exc:
         logger.error("_re_register_watch: failed for user %s: %s", user.id, exc)
+        sentry_sdk.capture_exception(exc)
         db.rollback()

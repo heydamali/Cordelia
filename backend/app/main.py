@@ -4,6 +4,9 @@ if os.getenv("ENVIRONMENT") == "development":
     os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 
 from fastapi import FastAPI
+from app.sentry import init_sentry
+
+init_sentry()
 from app.api.auth import router as auth_router
 from app.api.gmail import router as gmail_router
 from app.api.ingest import router as ingest_router

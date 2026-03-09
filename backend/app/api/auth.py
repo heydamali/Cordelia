@@ -2,13 +2,15 @@ import base64
 import json
 import logging
 from datetime import datetime, timezone
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from sqlalchemy.orm import Session
+
+import sentry_sdk
 
 from app.config import settings
 from app.database import get_db
@@ -131,6 +133,7 @@ def auth_google_callback(code: str, state: str | None = None, db: Session = Depe
         db.commit()
     except (GmailAuthError, GmailAPIError) as exc:
         logger.warning("failed to register Gmail watch for user %s: %s", user.id, exc)
+        sentry_sdk.capture_exception(exc)
 
     # Register Calendar watch
     cal_setting = (
@@ -141,7 +144,8 @@ def auth_google_callback(code: str, state: str | None = None, db: Session = Depe
     try:
         cal_connector = CalendarConnector(user=user)
         channel_id = CalendarConnector.generate_channel_id()
-        webhook_base = settings.GOOGLE_REDIRECT_URI.rsplit("/", 2)[0]
+        parsed = urlparse(settings.GOOGLE_REDIRECT_URI)
+        webhook_base = f"{parsed.scheme}://{parsed.netloc}"
         cal_reg = cal_connector.register_watch(
             channel_id=channel_id,
             webhook_url=f"{webhook_base}/webhooks/calendar",
@@ -153,6 +157,7 @@ def auth_google_callback(code: str, state: str | None = None, db: Session = Depe
         db.commit()
     except (CalendarAuthError, CalendarAPIError, ValueError) as exc:
         logger.warning("failed to register Calendar watch for user %s: %s", user.id, exc)
+        sentry_sdk.capture_exception(exc)
 
     if was_new_user:
         initial_gmail_sync.delay(user.id)

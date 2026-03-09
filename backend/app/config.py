@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     PUBSUB_VERIFICATION_TOKEN: str
     INGEST_API_KEY: str
     ANTHROPIC_API_KEY: str
+    SENTRY_DSN: str | None = None
 
 
 settings = Settings()

@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 
 import redis as redis_module
+import sentry_sdk
 from celery import shared_task
 from sqlalchemy.orm import Session
 
@@ -164,9 +166,11 @@ def initial_calendar_sync(user_id: str) -> None:
                 )
             except CalendarAuthError as exc:
                 logger.error("initial_calendar_sync: auth error for user %s: %s", user_id, exc)
+                sentry_sdk.capture_exception(exc)
                 return
             except CalendarAPIError as exc:
                 logger.error("initial_calendar_sync: API error for user %s: %s", user_id, exc)
+                sentry_sdk.capture_exception(exc)
                 return
 
             for event in result.events:
@@ -325,7 +329,8 @@ def renew_all_calendar_watches() -> None:
                     except (CalendarAuthError, CalendarAPIError):
                         pass  # old watch may already be expired
 
-                webhook_url = f"{settings.GOOGLE_REDIRECT_URI.rsplit('/', 2)[0]}{_CALENDAR_WEBHOOK_PATH}"
+                parsed = urlparse(settings.GOOGLE_REDIRECT_URI)
+                webhook_url = f"{parsed.scheme}://{parsed.netloc}{_CALENDAR_WEBHOOK_PATH}"
                 channel_id = CalendarConnector.generate_channel_id()
                 reg = connector.register_watch(channel_id=channel_id, webhook_url=webhook_url)
 
@@ -336,6 +341,7 @@ def renew_all_calendar_watches() -> None:
                 logger.info("renewed Calendar watch for user %s", cal_setting.user_id)
             except (CalendarAuthError, CalendarAPIError, ValueError) as exc:
                 logger.warning("renew_all_calendar_watches: failed for user %s: %s", cal_setting.user_id, exc)
+                sentry_sdk.capture_exception(exc)
                 db.rollback()
     finally:
         db.close()
