@@ -223,7 +223,7 @@ export function TaskListScreen({ userId, onSignOut }: Props) {
     <SafeAreaView style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.title}>Cordelia</Text>
+        <Text style={styles.title}>Delia</Text>
         {totalBadge > 0 && (
           <Text style={styles.badge}>{totalBadge}</Text>
         )}

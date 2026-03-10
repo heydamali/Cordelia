@@ -21,8 +21,8 @@ export function LoginScreen({ onSignIn, signingIn, error }: Props) {
         {/* Brand */}
         <View style={styles.brand}>
           <Text style={styles.logo}>✉️</Text>
-          <Text style={styles.appName}>Cordelia</Text>
-          <Text style={styles.tagline}>Your email, turned into action</Text>
+          <Text style={styles.appName}>Delia</Text>
+          <Text style={styles.tagline}>Your inbox, calendar & apps — turned into action</Text>
         </View>
 
         {/* Error */}
@@ -50,7 +50,7 @@ export function LoginScreen({ onSignIn, signingIn, error }: Props) {
         </TouchableOpacity>
 
         <Text style={styles.disclaimer}>
-          Cordelia reads your Gmail to surface tasks.{'\n'}
+          Delia reads your email, calendar, and work apps to surface tasks.{'\n'}
           Your data is never sold or shared.
         </Text>
       </View>
