@@ -1,20 +1,23 @@
 {
   "expo": {
-    "name": "Cordelia",
-    "slug": "cordelia",
-    "scheme": "cordelia",
+    "name": "Delia",
+    "slug": "delia",
+    "scheme": "delia",
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.cordelia.app"
+      "bundleIdentifier": "com.usedelia.app",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#ffffff"
       },
-      "package": "com.cordelia.app"
+      "package": "com.usedelia.app"
     },
     "plugins": [
       [
@@ -23,6 +26,11 @@
           "iosDisplayInForeground": true
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "69b85eef-8ab3-459b-8211-7399de949723"
+      }
+    }
   }
 }
