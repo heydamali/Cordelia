@@ -53,7 +53,7 @@ class TestUpsertTasks:
         user = _make_user(db_session)
         conv = _make_conversation(db_session, user.id)
 
-        results = upsert_tasks(
+        upserted, auto_completed = upsert_tasks(
             db=db_session,
             conversation_id=conv.id,
             user_id=user.id,
@@ -62,10 +62,10 @@ class TestUpsertTasks:
             llm_model=_MODEL,
         )
 
-        assert len(results) == 1
-        assert results[0].status == "pending"
-        assert results[0].category == "reply"
-        assert results[0].task_key == "reply-alice"
+        assert len(upserted) == 1
+        assert upserted[0].status == "pending"
+        assert upserted[0].category == "reply"
+        assert upserted[0].task_key == "reply-alice"
 
         stored = db_session.query(Task).filter(Task.conversation_id == conv.id).all()
         assert len(stored) == 1
@@ -76,7 +76,7 @@ class TestUpsertTasks:
         user = _make_user(db_session)
         conv = _make_conversation(db_session, user.id)
 
-        results = upsert_tasks(
+        upserted, auto_completed = upsert_tasks(
             db=db_session,
             conversation_id=conv.id,
             user_id=user.id,
@@ -85,7 +85,7 @@ class TestUpsertTasks:
             llm_model=_MODEL,
         )
 
-        assert results == []
+        assert upserted == []
         count = db_session.query(Task).filter(Task.conversation_id == conv.id).count()
         assert count == 0
 
@@ -100,7 +100,7 @@ class TestUpsertTasks:
             _llm_task("promo-2", category="ignored"),
         ]
 
-        results = upsert_tasks(
+        upserted, auto_completed = upsert_tasks(
             db=db_session,
             conversation_id=conv.id,
             user_id=user.id,
@@ -109,8 +109,8 @@ class TestUpsertTasks:
             llm_model=_MODEL,
         )
 
-        assert len(results) == 1
-        assert results[0].task_key == "reply-bob"
+        assert len(upserted) == 1
+        assert upserted[0].task_key == "reply-bob"
 
         stored = db_session.query(Task).filter(Task.conversation_id == conv.id).all()
         assert len(stored) == 1
@@ -138,7 +138,7 @@ class TestUpsertTasks:
         db_session.flush()
 
         # Run upsert with the same task key but now classified as ignored again
-        results = upsert_tasks(
+        upserted, auto_completed = upsert_tasks(
             db=db_session,
             conversation_id=conv.id,
             user_id=user.id,
@@ -147,7 +147,7 @@ class TestUpsertTasks:
             llm_model=_MODEL,
         )
 
-        assert results == []
+        assert upserted == []
         count = db_session.query(Task).filter(Task.conversation_id == conv.id).count()
         assert count == 0
 
@@ -167,7 +167,7 @@ class TestUpsertTasks:
         )
 
         # Second run with updated priority
-        results = upsert_tasks(
+        upserted, auto_completed = upsert_tasks(
             db=db_session,
             conversation_id=conv.id,
             user_id=user.id,
@@ -176,8 +176,8 @@ class TestUpsertTasks:
             llm_model=_MODEL,
         )
 
-        assert len(results) == 1
-        assert results[0].priority == "high"  # bumped up
+        assert len(upserted) == 1
+        assert upserted[0].priority == "high"  # bumped up
 
         stored = db_session.query(Task).filter(Task.conversation_id == conv.id).all()
         assert len(stored) == 1
@@ -196,7 +196,7 @@ class TestUpsertTasks:
             llm_model=_MODEL,
         )
 
-        results = upsert_tasks(
+        upserted, auto_completed = upsert_tasks(
             db=db_session,
             conversation_id=conv.id,
             user_id=user.id,
@@ -205,4 +205,4 @@ class TestUpsertTasks:
             llm_model=_MODEL,
         )
 
-        assert results[0].priority == "high"  # unchanged
+        assert upserted[0].priority == "high"  # unchanged

@@ -72,7 +72,7 @@ class TestProcessConversationWithLLM:
             {"input_tokens": 10, "output_tokens": 20},
         )
         mock_llm_processor._MODEL = "claude-haiku-4-5-20251001"
-        mock_task_engine.upsert_tasks.return_value = [MagicMock()]
+        mock_task_engine.upsert_tasks.return_value = ([MagicMock()], [])
 
         from app.tasks.llm_tasks import process_conversation_with_llm
         process_conversation_with_llm("conv-1", "user-1")
@@ -217,7 +217,7 @@ class TestProcessConversationWithLLM:
 
         mock_llm_processor.process_conversation.return_value = ([], "", {})
         mock_llm_processor._MODEL = "claude-haiku-4-5-20251001"
-        mock_task_engine.upsert_tasks.return_value = []
+        mock_task_engine.upsert_tasks.return_value = ([], [])
 
         from app.tasks.llm_tasks import process_conversation_with_llm
         process_conversation_with_llm("conv-1", "user-1")
@@ -251,7 +251,7 @@ class TestProcessConversationWithLLM:
             {"input_tokens": 5, "output_tokens": 5},
         )
         mock_llm_processor._MODEL = "claude-haiku-4-5-20251001"
-        mock_task_engine.upsert_tasks.return_value = []
+        mock_task_engine.upsert_tasks.return_value = ([], [])
 
         from app.tasks.llm_tasks import process_conversation_with_llm
         process_conversation_with_llm("conv-1", "user-1")
@@ -284,7 +284,7 @@ class TestProcessConversationWithLLM:
             {"input_tokens": 10, "output_tokens": 20},
         )
         mock_llm_processor._MODEL = "claude-haiku-4-5-20251001"
-        mock_task_engine.upsert_tasks.return_value = [MagicMock()]
+        mock_task_engine.upsert_tasks.return_value = ([MagicMock()], [])
 
         from app.tasks.llm_tasks import process_conversation_with_llm
         process_conversation_with_llm("conv-1", "user-1")
@@ -316,7 +316,7 @@ class TestProcessConversationWithLLM:
 
         mock_llm_processor.process_conversation.return_value = ([], "", {})
         mock_llm_processor._MODEL = "claude-haiku-4-5-20251001"
-        mock_task_engine.upsert_tasks.return_value = []
+        mock_task_engine.upsert_tasks.return_value = ([], [])
 
         from app.tasks.llm_tasks import process_conversation_with_llm
         process_conversation_with_llm("conv-1", "user-1")

@@ -18,6 +18,8 @@ from app.services.gmail_connector import (
     ThreadSummary,
 )
 
+from tests.conftest import auth_header
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -71,7 +73,7 @@ def test_list_threads_ok(client, db_session):
 
     with patch("app.api.gmail.GmailConnector") as MockConnector:
         MockConnector.return_value.list_threads.return_value = mock_result
-        resp = client.get("/gmail/threads", params={"user_id": user.id})
+        resp = client.get("/gmail/threads", headers=auth_header(user))
 
     assert resp.status_code == 200
     data = resp.json()
@@ -93,7 +95,8 @@ def test_list_threads_with_pagination(client, db_session):
         MockConnector.return_value.list_threads.return_value = mock_result
         resp = client.get(
             "/gmail/threads",
-            params={"user_id": user.id, "max_results": 1, "page_token": "prev_tok"},
+            params={"max_results": 1, "page_token": "prev_tok"},
+            headers=auth_header(user),
         )
 
     assert resp.status_code == 200
@@ -103,9 +106,9 @@ def test_list_threads_with_pagination(client, db_session):
     )
 
 
-def test_list_threads_user_not_found(client):
-    resp = client.get("/gmail/threads", params={"user_id": "nonexistent"})
-    assert resp.status_code == 404
+def test_list_threads_no_auth_returns_401_or_403(client):
+    resp = client.get("/gmail/threads")
+    assert resp.status_code in (401, 403)
 
 
 def test_list_threads_no_refresh_token(client, db_session):
@@ -114,7 +117,7 @@ def test_list_threads_no_refresh_token(client, db_session):
     db_session.add(user)
     db_session.commit()
 
-    resp = client.get("/gmail/threads", params={"user_id": user.id})
+    resp = client.get("/gmail/threads", headers=auth_header(user))
     assert resp.status_code == 400
 
 
@@ -123,7 +126,7 @@ def test_list_threads_auth_error(client, db_session):
 
     with patch("app.api.gmail.GmailConnector") as MockConnector:
         MockConnector.return_value.list_threads.side_effect = GmailAuthError("token revoked")
-        resp = client.get("/gmail/threads", params={"user_id": user.id})
+        resp = client.get("/gmail/threads", headers=auth_header(user))
 
     assert resp.status_code == 401
     assert "revoked" in resp.json()["detail"]
@@ -134,7 +137,7 @@ def test_list_threads_api_error(client, db_session):
 
     with patch("app.api.gmail.GmailConnector") as MockConnector:
         MockConnector.return_value.list_threads.side_effect = GmailAPIError(429, "rate limited")
-        resp = client.get("/gmail/threads", params={"user_id": user.id})
+        resp = client.get("/gmail/threads", headers=auth_header(user))
 
     assert resp.status_code == 429
 
@@ -151,7 +154,7 @@ def test_get_thread_ok(client, db_session):
 
     with patch("app.api.gmail.GmailConnector") as MockConnector:
         MockConnector.return_value.get_thread.return_value = mock_detail
-        resp = client.get("/gmail/threads/thread_1", params={"user_id": user.id})
+        resp = client.get("/gmail/threads/thread_1", headers=auth_header(user))
 
     assert resp.status_code == 200
     data = resp.json()
@@ -164,9 +167,9 @@ def test_get_thread_ok(client, db_session):
     assert m["labels"] == ["INBOX"]
 
 
-def test_get_thread_user_not_found(client):
-    resp = client.get("/gmail/threads/thread_1", params={"user_id": "nonexistent"})
-    assert resp.status_code == 404
+def test_get_thread_no_auth_returns_401_or_403(client):
+    resp = client.get("/gmail/threads/thread_1")
+    assert resp.status_code in (401, 403)
 
 
 def test_get_thread_auth_error(client, db_session):
@@ -174,7 +177,7 @@ def test_get_thread_auth_error(client, db_session):
 
     with patch("app.api.gmail.GmailConnector") as MockConnector:
         MockConnector.return_value.get_thread.side_effect = GmailAuthError("expired")
-        resp = client.get("/gmail/threads/t1", params={"user_id": user.id})
+        resp = client.get("/gmail/threads/t1", headers=auth_header(user))
 
     assert resp.status_code == 401
 
@@ -184,7 +187,7 @@ def test_get_thread_not_found(client, db_session):
 
     with patch("app.api.gmail.GmailConnector") as MockConnector:
         MockConnector.return_value.get_thread.side_effect = GmailAPIError(404, "Thread not found")
-        resp = client.get("/gmail/threads/bad_id", params={"user_id": user.id})
+        resp = client.get("/gmail/threads/bad_id", headers=auth_header(user))
 
     assert resp.status_code == 404
     assert "not found" in resp.json()["detail"].lower()

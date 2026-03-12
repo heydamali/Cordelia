@@ -10,6 +10,9 @@ import pytest
 from app.models.conversation import Conversation
 from app.models.task import Task
 from app.models.user import User
+from app.models.user_source_setting import UserSourceSetting
+
+from tests.conftest import auth_header
 
 
 # ---------------------------------------------------------------------------
@@ -24,6 +27,9 @@ def _make_user(db_session) -> User:
         name="Tasks Test User",
     )
     db_session.add(user)
+    db_session.flush()
+    # Ensure gmail source is enabled so tasks are not filtered out
+    db_session.add(UserSourceSetting(user_id=user.id, source="gmail", enabled=True))
     db_session.commit()
     return user
 
@@ -85,7 +91,7 @@ def test_get_tasks_returns_pending_by_default(client, db_session):
     task = _make_task(db_session, user, conv, status="pending")
     _make_task(db_session, user, conv, status="done")
 
-    resp = client.get(f"/tasks?user_id={user.id}")
+    resp = client.get("/tasks", headers=auth_header(user))
 
     assert resp.status_code == 200
     data = resp.json()
@@ -122,7 +128,7 @@ def test_get_tasks_sorted_by_priority(client, db_session):
     med = _make_task(db_session, user, conv, priority="medium", title="Medium priority")
     high = _make_task(db_session, user, conv, priority="high", title="High priority")
 
-    resp = client.get(f"/tasks?user_id={user.id}")
+    resp = client.get("/tasks", headers=auth_header(user))
 
     assert resp.status_code == 200
     titles = [t["title"] for t in resp.json()["tasks"]]
@@ -141,7 +147,7 @@ def test_get_tasks_status_done(client, db_session):
     done_task = _make_task(db_session, user, conv, status="done")
     _make_task(db_session, user, conv, status="pending")
 
-    resp = client.get(f"/tasks?user_id={user.id}&status=done")
+    resp = client.get("/tasks?status=done", headers=auth_header(user))
 
     assert resp.status_code == 200
     data = resp.json()
@@ -156,7 +162,7 @@ def test_get_tasks_status_all(client, db_session):
     _make_task(db_session, user, conv, status="done")
     _make_task(db_session, user, conv, status="snoozed")
 
-    resp = client.get(f"/tasks?user_id={user.id}&status=all")
+    resp = client.get("/tasks?status=all", headers=auth_header(user))
 
     assert resp.status_code == 200
     assert resp.json()["total"] == 3
@@ -178,25 +184,25 @@ def test_past_due_appointment_is_auto_transitioned_to_missed(client, db_session)
         due_at=datetime.now(timezone.utc) - timedelta(hours=1),
     )
 
-    resp = client.get(f"/tasks?user_id={user.id}&status=pending")
+    headers = auth_header(user)
+    resp = client.get("/tasks?status=pending", headers=headers)
 
     assert resp.status_code == 200
     ids = [t["id"] for t in resp.json()["tasks"]]
     assert appt.id not in ids  # removed from pending
 
     # Confirm it now appears under missed
-    resp2 = client.get(f"/tasks?user_id={user.id}&status=missed")
+    resp2 = client.get("/tasks?status=missed", headers=headers)
     assert resp2.status_code == 200
     assert resp2.json()["tasks"][0]["id"] == appt.id
     assert resp2.json()["tasks"][0]["status"] == "missed"
 
 
 def test_past_due_appointment_excluded_from_pending(client, db_session):
-    """A non-appointment pending task alongside a past-due appointment:
-    only the appointment is removed from pending."""
+    """Both past-due appointments and non-appointments are auto-transitioned out of pending."""
     user = _make_user(db_session)
     conv = _make_conversation(db_session, user)
-    reply_task = _make_task(
+    _make_task(
         db_session, user, conv,
         category="reply",
         status="pending",
@@ -209,16 +215,15 @@ def test_past_due_appointment_excluded_from_pending(client, db_session):
         due_at=datetime.now(timezone.utc) - timedelta(hours=2),
     )
 
-    resp = client.get(f"/tasks?user_id={user.id}&status=pending")
+    resp = client.get("/tasks?status=pending", headers=auth_header(user))
 
     assert resp.status_code == 200
-    ids = [t["id"] for t in resp.json()["tasks"]]
-    assert reply_task.id in ids  # reply stays pending (still actionable)
-    assert resp.json()["total"] == 1
+    # Both are auto-transitioned: appointment→missed, reply→expired
+    assert resp.json()["total"] == 0
 
 
-def test_past_due_non_appointment_stays_pending(client, db_session):
-    """reply and action tasks past their deadline are NOT auto-transitioned."""
+def test_past_due_non_appointment_auto_expired(client, db_session):
+    """reply and action tasks past their deadline are auto-transitioned to expired."""
     user = _make_user(db_session)
     conv = _make_conversation(db_session, user)
     past_due = datetime.now(timezone.utc) - timedelta(days=1)
@@ -226,8 +231,11 @@ def test_past_due_non_appointment_stays_pending(client, db_session):
     reply_task = _make_task(db_session, user, conv, category="reply",  status="pending", due_at=past_due)
     action_task = _make_task(db_session, user, conv, category="action", status="pending", due_at=past_due)
 
-    resp = client.get(f"/tasks?user_id={user.id}&status=pending")
+    # Trigger auto-transition
+    client.get("/tasks?status=pending", headers=auth_header(user))
 
+    # Both should appear in the missed (past due) tab
+    resp = client.get("/tasks?status=missed", headers=auth_header(user))
     assert resp.status_code == 200
     ids = [t["id"] for t in resp.json()["tasks"]]
     assert reply_task.id in ids
@@ -245,7 +253,7 @@ def test_future_appointment_stays_pending(client, db_session):
         due_at=datetime.now(timezone.utc) + timedelta(days=1),
     )
 
-    resp = client.get(f"/tasks?user_id={user.id}&status=pending")
+    resp = client.get("/tasks?status=pending", headers=auth_header(user))
 
     assert resp.status_code == 200
     ids = [t["id"] for t in resp.json()["tasks"]]
@@ -263,7 +271,7 @@ def test_appointment_without_due_at_stays_pending(client, db_session):
         due_at=None,
     )
 
-    resp = client.get(f"/tasks?user_id={user.id}&status=pending")
+    resp = client.get("/tasks?status=pending", headers=auth_header(user))
 
     assert resp.status_code == 200
     ids = [t["id"] for t in resp.json()["tasks"]]
@@ -277,7 +285,7 @@ def test_missed_status_queryable(client, db_session):
     missed_task = _make_task(db_session, user, conv, status="missed")
     _make_task(db_session, user, conv, status="pending")
 
-    resp = client.get(f"/tasks?user_id={user.id}&status=missed")
+    resp = client.get("/tasks?status=missed", headers=auth_header(user))
 
     assert resp.status_code == 200
     data = resp.json()
@@ -292,7 +300,7 @@ def test_get_tasks_status_expired_filter(client, db_session):
     expired_task = _make_task(db_session, user, conv, status="expired")
     _make_task(db_session, user, conv, status="pending")
 
-    resp = client.get(f"/tasks?user_id={user.id}&status=expired")
+    resp = client.get("/tasks?status=expired", headers=auth_header(user))
 
     assert resp.status_code == 200
     data = resp.json()
@@ -307,7 +315,7 @@ def test_get_tasks_status_all_includes_expired(client, db_session):
     _make_task(db_session, user, conv, status="pending")
     _make_task(db_session, user, conv, status="expired")
 
-    resp = client.get(f"/tasks?user_id={user.id}&status=all")
+    resp = client.get("/tasks?status=all", headers=auth_header(user))
 
     assert resp.status_code == 200
     assert resp.json()["total"] == 2
@@ -324,7 +332,7 @@ def test_get_tasks_category_filter(client, db_session):
     reply_task = _make_task(db_session, user, conv, category="reply")
     _make_task(db_session, user, conv, category="appointment")
 
-    resp = client.get(f"/tasks?user_id={user.id}&category=reply")
+    resp = client.get("/tasks?category=reply", headers=auth_header(user))
 
     assert resp.status_code == 200
     data = resp.json()
@@ -337,14 +345,22 @@ def test_get_tasks_category_filter(client, db_session):
 # ---------------------------------------------------------------------------
 
 
-def test_get_tasks_unknown_user_returns_404(client):
-    resp = client.get(f"/tasks?user_id={uuid.uuid4()}")
-    assert resp.status_code == 404
+def test_get_tasks_unknown_user_returns_401(client):
+    """A token for a non-existent user returns 401."""
+    from app.auth.jwt import create_access_token
+    token = create_access_token(user_id=str(uuid.uuid4()), email="ghost@example.com")
+    resp = client.get("/tasks", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 401
+
+
+def test_get_tasks_no_auth_returns_401_or_403(client):
+    resp = client.get("/tasks")
+    assert resp.status_code in (401, 403)
 
 
 def test_get_tasks_invalid_status_returns_400(client, db_session):
     user = _make_user(db_session)
-    resp = client.get(f"/tasks?user_id={user.id}&status=invalid_status")
+    resp = client.get("/tasks?status=invalid_status", headers=auth_header(user))
     assert resp.status_code == 400
 
 
@@ -362,7 +378,7 @@ def test_get_tasks_excludes_other_users_tasks(client, db_session):
     task_a = _make_task(db_session, user_a, conv_a)
     _make_task(db_session, user_b, conv_b)
 
-    resp = client.get(f"/tasks?user_id={user_a.id}")
+    resp = client.get("/tasks", headers=auth_header(user_a))
 
     assert resp.status_code == 200
     data = resp.json()
@@ -382,8 +398,9 @@ def test_patch_task_updates_status_to_done(client, db_session):
     original_updated_at = task.updated_at
 
     resp = client.patch(
-        f"/tasks/{task.id}?user_id={user.id}",
+        f"/tasks/{task.id}",
         json={"status": "done"},
+        headers=auth_header(user),
     )
 
     assert resp.status_code == 200
@@ -401,8 +418,9 @@ def test_patch_task_wrong_user_returns_404(client, db_session):
     task = _make_task(db_session, user_a, conv)
 
     resp = client.patch(
-        f"/tasks/{task.id}?user_id={user_b.id}",
+        f"/tasks/{task.id}",
         json={"status": "done"},
+        headers=auth_header(user_b),
     )
 
     assert resp.status_code == 404
@@ -412,8 +430,9 @@ def test_patch_task_unknown_task_returns_404(client, db_session):
     user = _make_user(db_session)
 
     resp = client.patch(
-        f"/tasks/{uuid.uuid4()}?user_id={user.id}",
+        f"/tasks/{uuid.uuid4()}",
         json={"status": "done"},
+        headers=auth_header(user),
     )
 
     assert resp.status_code == 404
@@ -425,8 +444,9 @@ def test_patch_task_invalid_status_returns_422(client, db_session):
     task = _make_task(db_session, user, conv)
 
     resp = client.patch(
-        f"/tasks/{task.id}?user_id={user.id}",
+        f"/tasks/{task.id}",
         json={"status": "not_a_real_status"},
+        headers=auth_header(user),
     )
 
     assert resp.status_code == 422
@@ -446,8 +466,9 @@ def test_patch_snoozed_stores_snoozed_until(client, db_session):
     snooze_until = "2026-03-01T09:00:00Z"
 
     resp = client.patch(
-        f"/tasks/{task.id}?user_id={user.id}",
+        f"/tasks/{task.id}",
         json={"status": "snoozed", "snoozed_until": snooze_until},
+        headers=auth_header(user),
     )
 
     assert resp.status_code == 200
@@ -466,8 +487,9 @@ def test_patch_snoozed_without_snoozed_until_is_indefinite(client, db_session):
     )
 
     resp = client.patch(
-        f"/tasks/{task.id}?user_id={user.id}",
+        f"/tasks/{task.id}",
         json={"status": "snoozed"},
+        headers=auth_header(user),
     )
 
     assert resp.status_code == 200
@@ -487,8 +509,9 @@ def test_patch_done_clears_snoozed_until(client, db_session):
     )
 
     resp = client.patch(
-        f"/tasks/{task.id}?user_id={user.id}",
+        f"/tasks/{task.id}",
         json={"status": "done"},
+        headers=auth_header(user),
     )
 
     assert resp.status_code == 200
@@ -509,7 +532,7 @@ def test_pagination_first_page_has_more_true(client, db_session):
     for i in range(5):
         _make_task(db_session, user, conv, title=f"Task {i}")
 
-    resp = client.get(f"/tasks?user_id={user.id}&limit=3&offset=0")
+    resp = client.get("/tasks?limit=3&offset=0", headers=auth_header(user))
 
     assert resp.status_code == 200
     data = resp.json()
@@ -526,7 +549,7 @@ def test_pagination_second_page_has_more_false(client, db_session):
     for i in range(5):
         _make_task(db_session, user, conv, title=f"Task {i}")
 
-    resp = client.get(f"/tasks?user_id={user.id}&limit=3&offset=3")
+    resp = client.get("/tasks?limit=3&offset=3", headers=auth_header(user))
 
     assert resp.status_code == 200
     data = resp.json()
@@ -542,7 +565,7 @@ def test_pagination_exact_page_boundary_has_more_false(client, db_session):
     for i in range(3):
         _make_task(db_session, user, conv, title=f"Task {i}")
 
-    resp = client.get(f"/tasks?user_id={user.id}&limit=3&offset=0")
+    resp = client.get("/tasks?limit=3&offset=0", headers=auth_header(user))
 
     assert resp.status_code == 200
     data = resp.json()
@@ -557,7 +580,7 @@ def test_pagination_total_reflects_full_count_not_page(client, db_session):
     for i in range(10):
         _make_task(db_session, user, conv)
 
-    resp = client.get(f"/tasks?user_id={user.id}&limit=3&offset=0")
+    resp = client.get("/tasks?limit=3&offset=0", headers=auth_header(user))
 
     assert resp.status_code == 200
     assert resp.json()["total"] == 10
@@ -571,8 +594,9 @@ def test_pagination_pages_are_non_overlapping_and_cover_all(client, db_session):
         _make_task(db_session, user, conv, title=f"T{i}").id for i in range(5)
     }
 
-    page1 = client.get(f"/tasks?user_id={user.id}&limit=3&offset=0").json()["tasks"]
-    page2 = client.get(f"/tasks?user_id={user.id}&limit=3&offset=3").json()["tasks"]
+    headers = auth_header(user)
+    page1 = client.get("/tasks?limit=3&offset=0", headers=headers).json()["tasks"]
+    page2 = client.get("/tasks?limit=3&offset=3", headers=headers).json()["tasks"]
 
     returned_ids = {t["id"] for t in page1} | {t["id"] for t in page2}
     assert returned_ids == created_ids
@@ -584,19 +608,19 @@ def test_pagination_offset_echoed_in_response(client, db_session):
     conv = _make_conversation(db_session, user)
     _make_task(db_session, user, conv)
 
-    resp = client.get(f"/tasks?user_id={user.id}&offset=7")
+    resp = client.get("/tasks?offset=7", headers=auth_header(user))
     assert resp.json()["offset"] == 7
 
 
 def test_pagination_limit_zero_returns_422(client, db_session):
     user = _make_user(db_session)
-    resp = client.get(f"/tasks?user_id={user.id}&limit=0")
+    resp = client.get("/tasks?limit=0", headers=auth_header(user))
     assert resp.status_code == 422
 
 
 def test_pagination_limit_over_100_returns_422(client, db_session):
     user = _make_user(db_session)
-    resp = client.get(f"/tasks?user_id={user.id}&limit=101")
+    resp = client.get("/tasks?limit=101", headers=auth_header(user))
     assert resp.status_code == 422
 
 
@@ -613,7 +637,7 @@ def test_priority_filter_returns_only_matching_priority(client, db_session):
     _make_task(db_session, user, conv, priority="medium")
     _make_task(db_session, user, conv, priority="low")
 
-    resp = client.get(f"/tasks?user_id={user.id}&priority=high")
+    resp = client.get("/tasks?priority=high", headers=auth_header(user))
 
     assert resp.status_code == 200
     data = resp.json()
@@ -631,7 +655,7 @@ def test_priority_filter_combined_with_pagination(client, db_session):
         _make_task(db_session, user, conv, priority="high", title=f"High {i}")
     _make_task(db_session, user, conv, priority="medium")
 
-    resp = client.get(f"/tasks?user_id={user.id}&priority=high&limit=2&offset=0")
+    resp = client.get("/tasks?priority=high&limit=2&offset=0", headers=auth_header(user))
 
     assert resp.status_code == 200
     data = resp.json()
@@ -649,7 +673,7 @@ def test_priority_filter_missed_status_combined(client, db_session):
     _make_task(db_session, user, conv, priority="low",  status="missed")
     _make_task(db_session, user, conv, priority="high", status="pending")
 
-    resp = client.get(f"/tasks?user_id={user.id}&status=missed&priority=high")
+    resp = client.get("/tasks?status=missed&priority=high", headers=auth_header(user))
 
     assert resp.status_code == 200
     data = resp.json()

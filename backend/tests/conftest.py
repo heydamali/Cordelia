@@ -30,8 +30,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from starlette.testclient import TestClient
 
+from app.auth.jwt import create_access_token
 from app.database import Base, get_db
 from app.main import app
+from app.models.user import User
 
 
 # In-memory SQLite engine shared across the test session
@@ -70,3 +72,9 @@ def client(db_session):
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
+
+
+def auth_header(user: User) -> dict[str, str]:
+    """Return an Authorization header dict for the given user."""
+    token = create_access_token(user_id=str(user.id), email=user.email)
+    return {"Authorization": f"Bearer {token}"}

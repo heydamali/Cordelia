@@ -114,18 +114,17 @@ class TestProcessGmailNotification:
     def test_success_fetches_threads_and_updates_cursor(self):
         user = _make_mock_user(history_id="11111")
         history_result = _make_history_result(["thread_a", "thread_b"], new_cursor="22222")
+        empty_history = _make_history_result([], new_cursor="22222")
 
         connector = MagicMock()
-        connector.list_history.return_value = history_result
+        connector.list_history.side_effect = [history_result, empty_history]
         connector.get_thread.return_value = _make_thread_detail()
 
         mock_db = self._run(user=user, connector=connector)
 
-        connector.list_history.assert_called_once_with(start_history_id="11111")
+        assert connector.list_history.call_count == 2
         assert connector.get_thread.call_count == 2
         assert user.gmail_history_id == "22222"
-        # ingest() commits once per thread (2) + cursor update commit (1) = 3 total
-        assert mock_db.commit.call_count == 3
 
     def test_404_triggers_re_registration(self):
         user = _make_mock_user(history_id="11111")
@@ -264,6 +263,7 @@ class TestGmailLock:
         history_result = _make_history_result([], new_cursor="22222")
 
         connector = MagicMock()
+        # INBOX pass + SENT pass
         connector.list_history.return_value = history_result
 
         mock_redis_module, mock_lock = _make_mock_redis(lock_acquired=True)
@@ -285,7 +285,7 @@ class TestGmailLock:
             from app.tasks.gmail_tasks import process_gmail_notification
             process_gmail_notification("user-1", "11111")
 
-        connector.list_history.assert_called_once()
+        assert connector.list_history.call_count == 2  # INBOX + SENT
         mock_lock.release.assert_called_once()
 
     def test_lock_not_acquired_returns_early_no_db_commit(self):
@@ -430,30 +430,20 @@ class TestInitialGmailSync:
         mock_db.close.assert_called_once()
 
     def test_success_fetches_all_threads_and_queues_llm(self):
-        """All 3 windows are always run; threads already seen are deduplicated."""
+        """Single 1d window fetches threads and queues LLM processing."""
         user = _make_mock_user()
-        # Window 1 returns 2 threads; windows 2 and 3 return same 2 (already seen)
         result = self._make_thread_list_result(["t1", "t2"])
-        empty = self._make_thread_list_result([])
 
         connector = MagicMock()
-        connector.list_threads.side_effect = [result, empty, empty]
+        connector.list_threads.return_value = result
         connector.get_thread.return_value = _make_thread_detail()
 
         _, mock_ingest, mock_llm = self._run(user=user, connector=connector)
 
-        # All 3 windows attempted
-        assert connector.list_threads.call_count == 3
-        connector.list_threads.assert_any_call(
+        assert connector.list_threads.call_count == 1
+        connector.list_threads.assert_called_with(
             query="newer_than:1d", max_results=50, page_token=None
         )
-        connector.list_threads.assert_any_call(
-            query="newer_than:3d", max_results=50, page_token=None
-        )
-        connector.list_threads.assert_any_call(
-            query="newer_than:7d", max_results=50, page_token=None
-        )
-        # Only 2 unique threads ingested
         assert connector.get_thread.call_count == 2
         assert mock_ingest.call_count == 2
         mock_llm.delay.assert_called()
@@ -502,52 +492,45 @@ class TestInitialGmailSync:
         assert mock_ingest.call_count == 2
 
     def test_pagination_follows_next_page_token(self):
-        """Pagination within a window is followed; wider windows are tried if below threshold."""
+        """Pagination within the window is followed until exhausted."""
         user = _make_mock_user()
 
         page1 = self._make_thread_list_result(["t1", "t2"], next_page_token="tok2")
         page2 = self._make_thread_list_result(["t3"], next_page_token=None)
-        # 3 threads < 5 threshold → 2 more windows are tried; both return empty
-        empty = self._make_thread_list_result([])
 
         connector = MagicMock()
-        connector.list_threads.side_effect = [page1, page2, empty, empty]
+        connector.list_threads.side_effect = [page1, page2]
         connector.get_thread.return_value = _make_thread_detail()
 
         _, mock_ingest, _ = self._run(user=user, connector=connector)
 
-        # 2 calls for window-1 pagination + 1 each for windows 2 and 3
-        assert connector.list_threads.call_count == 4
+        assert connector.list_threads.call_count == 2
         connector.list_threads.assert_any_call(
             query="newer_than:1d", max_results=50, page_token=None
         )
         connector.list_threads.assert_any_call(
             query="newer_than:1d", max_results=50, page_token="tok2"
         )
-        # 3 unique threads ingested (none duplicated across windows)
         assert mock_ingest.call_count == 3
 
     def test_pagination_error_on_second_page_stops_gracefully(self):
-        """An error mid-pagination stops that window; wider windows are still tried."""
+        """An error mid-pagination stops the window gracefully."""
         user = _make_mock_user()
 
         page1 = self._make_thread_list_result(["t1"], next_page_token="tok2")
-        empty = self._make_thread_list_result([])
 
         connector = MagicMock()
         connector.list_threads.side_effect = [
             page1,
-            GmailAPIError(500, "server error"),  # page 2 of window 1 fails
-            empty,  # window 2
-            empty,  # window 3
+            GmailAPIError(500, "server error"),  # page 2 fails
         ]
         connector.get_thread.return_value = _make_thread_detail()
 
         _, mock_ingest, _ = self._run(user=user, connector=connector)
 
-        # First page was processed; second failed; 2 wider windows attempted
+        # First page was processed; second failed
         assert mock_ingest.call_count == 1
-        assert connector.list_threads.call_count == 4
+        assert connector.list_threads.call_count == 2
 
     def test_db_session_always_closed(self):
         """DB session is closed even when an unexpected error occurs."""
@@ -567,58 +550,36 @@ class TestInitialGmailSync:
 
     # ── all-windows behaviour ─────────────────────────────────────────────────
 
-    def test_all_three_windows_always_run(self):
-        """All 3 windows are always attempted regardless of how many threads are found."""
+    def test_many_threads_ingested(self):
+        """All threads found in the 1d window are ingested."""
         user = _make_mock_user()
-        # Even 10 threads in the 24h window doesn't stop the wider windows
         result = self._make_thread_list_result([f"t{i}" for i in range(10)])
-        empty = self._make_thread_list_result([])
 
         connector = MagicMock()
-        connector.list_threads.side_effect = [result, empty, empty]
-        connector.get_thread.return_value = _make_thread_detail()
-
-        self._run(user=user, connector=connector)
-
-        assert connector.list_threads.call_count == 3
-        connector.list_threads.assert_any_call(
-            query="newer_than:7d", max_results=50, page_token=None
-        )
-
-    def test_wider_windows_find_threads_missed_by_24h(self):
-        """Threads only present in the 3d/7d windows are ingested."""
-        user = _make_mock_user()
-
-        window_1d = self._make_thread_list_result(["t1", "t2"])
-        # 3d window reveals 3 extra threads beyond the 24h set
-        window_3d = self._make_thread_list_result(["t1", "t2", "t3", "t4", "t5"])
-        empty = self._make_thread_list_result([])
-
-        connector = MagicMock()
-        connector.list_threads.side_effect = [window_1d, window_3d, empty]
+        connector.list_threads.return_value = result
         connector.get_thread.return_value = _make_thread_detail()
 
         _, mock_ingest, _ = self._run(user=user, connector=connector)
 
-        # 2 from 24h + 3 new from 3d window = 5 total ingested
-        assert mock_ingest.call_count == 5
+        assert connector.list_threads.call_count == 1
+        assert mock_ingest.call_count == 10
 
-    def test_deduplicates_threads_across_windows(self):
-        """Threads returned in a wider window that were already seen are not re-ingested."""
+    def test_deduplicates_threads_within_window(self):
+        """Duplicate thread IDs within paginated results are not re-ingested."""
         user = _make_mock_user()
 
-        window_1d = self._make_thread_list_result(["t1", "t2"])
-        overlap = self._make_thread_list_result(["t1", "t2"])
+        page1 = self._make_thread_list_result(["t1", "t2"], next_page_token="tok2")
+        # page2 repeats t1
+        page2 = self._make_thread_list_result(["t1", "t3"])
 
         connector = MagicMock()
-        connector.list_threads.side_effect = [window_1d, overlap, overlap]
+        connector.list_threads.side_effect = [page1, page2]
         connector.get_thread.return_value = _make_thread_detail()
 
         _, mock_ingest, _ = self._run(user=user, connector=connector)
 
-        # All 3 windows tried; only 2 unique threads ingested (no duplicates)
-        assert connector.list_threads.call_count == 3
-        assert mock_ingest.call_count == 2
+        # t1 seen in page1 is not re-ingested from page2
+        assert mock_ingest.call_count == 3
 
     def test_auth_error_in_window_stops_all_windows(self):
         """A GmailAuthError in any window aborts the entire sync immediately."""

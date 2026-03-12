@@ -4,6 +4,7 @@ if os.getenv("ENVIRONMENT") == "development":
     os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from app.sentry import init_sentry
 
 init_sentry()
@@ -15,7 +16,17 @@ from app.api.tasks import router as tasks_router
 from app.api.users import router as users_router
 from app.api.webhooks import router as webhooks_router
 
-app = FastAPI(title="Cordelia API", version="0.1.0")
+app = FastAPI(title="Delia API", version="0.1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://compassionate-expression-production.up.railway.app",
+    ],
+    allow_credentials=True,
+    allow_methods=["GET", "PATCH", "POST", "DELETE"],
+    allow_headers=["*"],
+)
 
 app.include_router(auth_router)
 app.include_router(gmail_router)
