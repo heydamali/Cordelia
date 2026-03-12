@@ -11,7 +11,7 @@ from app.models.conversation import Conversation
 from app.models.message import Message
 from app.models.task import Task
 from app.models.user import User
-from app.services import llm_processor, task_engine
+from app.services import llm_processor, task_engine, notification_service
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +52,14 @@ def process_conversation_with_llm(self, conversation_id: str, user_id: str) -> N
         user_email = user.email if user else "unknown"
         user_name = user.name if user else None
 
+        # Pass all open task keys for this user so the LLM can deduplicate
+        # across sources (e.g. same event appearing in both email and calendar)
         existing_task_keys = [
             t.task_key
-            for t in db.query(Task).filter(Task.conversation_id == conversation_id).all()
+            for t in db.query(Task).filter(
+                Task.user_id == user_id,
+                Task.status.in_(["pending", "snoozed"]),
+            ).all()
         ]
 
         try:
@@ -78,7 +83,7 @@ def process_conversation_with_llm(self, conversation_id: str, user_id: str) -> N
             raise self.retry(exc=exc)
 
         raw_llm_output = {"text": raw_text, "usage": usage}
-        upserted = task_engine.upsert_tasks(
+        upserted, auto_completed = task_engine.upsert_tasks(
             db=db,
             conversation_id=conversation_id,
             user_id=user_id,
@@ -89,10 +94,16 @@ def process_conversation_with_llm(self, conversation_id: str, user_id: str) -> N
         )
 
         logger.info(
-            "process_conversation_with_llm: conversation=%s tasks_processed=%d",
+            "process_conversation_with_llm: conversation=%s tasks_processed=%d auto_completed=%d",
             conversation_id,
             len(upserted),
+            len(auto_completed),
         )
+
+        # Send push notifications for tasks the LLM auto-completed
+        if auto_completed and user:
+            for task in auto_completed:
+                notification_service.notify_task_completed(user, task)
 
         # Prune conversations that yielded no actionable tasks (spam / promotions).
         # Deleting the Conversation cascades to its Messages via "all, delete-orphan".

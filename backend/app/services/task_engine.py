@@ -36,25 +36,45 @@ def upsert_tasks(
     raw_llm_output: Any,
     llm_model: str,
     source: str = "gmail",
-) -> list[Task]:
+) -> tuple[list[Task], list[Task]]:
     """Idempotently upsert LLM tasks into the DB, applying priority/status rules.
+
+    Returns (upserted, auto_completed) where auto_completed are tasks the LLM
+    determined are now resolved.
 
     Upsert rules:
     - No existing row + ignored category → skip; caller prunes conversation if no tasks remain
     - No existing row + actionable       → INSERT with status=pending
+    - pending + resolved=true            → mark status=done (auto-complete)
     - pending          → UPDATE title/summary/due_at/notify_at; priority only bumps UP
     - done / snoozed   → UPDATE llm_model + raw_llm_output only
     - ignored (legacy) → DELETE the row; caller prunes conversation if no tasks remain
+
+    Cross-source deduplication: existing tasks are looked up by (user_id, task_key) so
+    that a calendar event about the same appointment as an email thread reuses the same
+    task rather than creating a duplicate.
     """
     now = datetime.now(timezone.utc)
 
-    # Load all existing tasks for this conversation in one query
-    existing_rows: dict[str, Task] = {
+    # Load tasks for this conversation first (highest priority for key matching)
+    conv_tasks: dict[str, Task] = {
         t.task_key: t
         for t in db.query(Task).filter(Task.conversation_id == conversation_id).all()
     }
+    # Also load open tasks for this user from OTHER conversations (cross-source dedup)
+    user_tasks: dict[str, Task] = {
+        t.task_key: t
+        for t in db.query(Task).filter(
+            Task.user_id == user_id,
+            Task.conversation_id != conversation_id,
+            Task.status.in_(["pending", "snoozed"]),
+        ).all()
+    }
+    # Conversation-specific tasks take precedence over cross-source matches
+    existing_rows: dict[str, Task] = {**user_tasks, **conv_tasks}
 
     results: list[Task] = []
+    auto_completed: list[Task] = []
 
     for llm_task in llm_tasks:
         existing = existing_rows.get(llm_task.task_key)
@@ -96,7 +116,17 @@ def upsert_tasks(
             results.append(existing)
 
         else:
-            # pending — UPDATE title, summary, due_at, notify_at; priority only bumps UP
+            # pending — check for LLM-detected resolution first
+            if llm_task.resolved:
+                existing.status = "done"
+                existing.llm_model = llm_model
+                existing.raw_llm_output = raw_llm_output
+                existing.updated_at = now
+                results.append(existing)
+                auto_completed.append(existing)
+                continue
+
+            # UPDATE title, summary, due_at, notify_at; priority only bumps UP
             existing.title = llm_task.title
             existing.summary = llm_task.summary
             existing.due_at = _parse_due_at(llm_task.due_at)
@@ -111,4 +141,4 @@ def upsert_tasks(
             results.append(existing)
 
     db.commit()
-    return results
+    return results, auto_completed

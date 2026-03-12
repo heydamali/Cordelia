@@ -43,9 +43,18 @@ PRIORITY:
 - low: no deadline, informational action
 
 DEDUPLICATION:
-- You will receive EXISTING_TASK_KEYS — reuse these exact keys for tasks that match an existing task
+- You will receive EXISTING_TASK_KEYS — reuse these exact keys for tasks that match an existing task \
+(including tasks from other sources such as calendar events about the same thing)
 - When reusing an existing task_key (follow-up), bump priority one level higher than what \
 you would otherwise assign (low→medium, medium→high). If already high, keep high.
+
+TASK CONSOLIDATION:
+- Produce ONE task per actionable item — do not split a single situation into multiple tasks
+- If the thread requires 2 or more related actions, fold them into a single task
+- In the summary field, list each sub-action as a bullet (prefix with "• ") when there are 2+ actions
+- Choose the category and priority of the most critical action
+- Example: email asking to confirm a meeting AND share an agenda → one "reply" task with \
+summary: "• Confirm attendance\n• Share agenda before the meeting"
 
 CATEGORIES: reply | appointment | action | info | ignored
 
@@ -69,19 +78,31 @@ low-priority → space reminders further apart
 - Examples with deadlines: task due in 3 days → ["<tomorrow 09:00>", "<day-before 08:00>"]; \
 task due in 1 week → ["<3 days before 09:00>", "<1 day before 09:00>"]
 
+RESOLUTION DETECTION:
+- Set resolved: true only when the full thread shows the task objective has genuinely been accomplished
+- Not just "user replied" — the reply must actually fulfil what was required
+- resolved: true examples: user confirmed attendance and no further action needed; \
+both parties concluded the matter; the requested info was sent and acknowledged
+- resolved: false examples: user replied with "let me check"; clarifying question was asked; \
+partial progress but still pending; any ambiguity → default to false
+- When resolved: true, set resolution_reason to a one-sentence explanation
+- Ignored tasks: always resolved: false
+
 OUTPUT FORMAT (raw JSON only, no markdown):
 {"tasks": [{"task_key": "reply-john-thursday", "title": "Reply to John about Thursday meeting", \
 "category": "reply", "priority": "high", "summary": "John asked about the Thursday meeting \
 agenda and needs a response.", "due_at": null, "ignore_reason": null, \
-"notify_at": ["2026-02-25T08:00:00Z"]}]}
+"resolved": false, "resolution_reason": null, "notify_at": ["2026-02-25T08:00:00Z"]}]}
 
 For ignored emails include: {"task_key": "ignore-newsletter-acme", "title": "Newsletter from \
 Acme Corp", "category": "ignored", "priority": "low", "summary": null, "due_at": null, \
-"ignore_reason": "Automated promotional newsletter", "notify_at": []}
+"ignore_reason": "Automated promotional newsletter", "resolved": false, \
+"resolution_reason": null, "notify_at": []}
 
 task_key must be a short hyphenated slug like "reply-john-thursday" or "schedule-dentist-appointment".
 due_at must be ISO-8601 string or null.
-notify_at must be a JSON array of ISO-8601 UTC datetime strings (0–3 items)."""
+notify_at must be a JSON array of ISO-8601 UTC datetime strings (0–3 items).
+resolved must be a boolean. resolution_reason must be a string or null."""
 
 
 _CALENDAR_SYSTEM_PROMPT = """\
@@ -98,6 +119,15 @@ RULES:
 (daily standups, lunch blocks, focus time, recurring 1:1s with no agenda)
 - PROCESS: events that need preparation, RSVP response, follow-ups, or action items
 - Cancelled events: create an "info" task notifying the user of the cancellation
+
+DEDUPLICATION:
+- You will receive EXISTING_TASK_KEYS — reuse these exact keys for tasks that match an \
+existing task (including tasks already created from related emails about the same event)
+
+TASK CONSOLIDATION:
+- Produce ONE task per event — do not create separate tasks for "attend" and "prepare" \
+unless they are genuinely independent with different deadlines
+- If multiple actions are needed, list each as a bullet (prefix "• ") in the summary field
 
 CATEGORIES: appointment | action | info | ignored
 - appointment: the event itself is the task (meeting to attend, doctor visit, etc.)
@@ -122,19 +152,29 @@ NOTIFY_AT:
 - Follow-up tasks: remind at due_at time
 - Ignored tasks: always []
 
+RESOLUTION DETECTION:
+- Set resolved: true when the event-related task has been genuinely completed \
+(RSVP accepted and confirmed, preparation done and communicated, follow-up sent)
+- Default to resolved: false for upcoming events with pending actions
+- Ignored tasks: always resolved: false
+- When resolved: true, set resolution_reason to a one-sentence explanation
+
 OUTPUT FORMAT (raw JSON only, no markdown):
 {"tasks": [{"task_key": "prep-quarterly-review", "title": "Prepare for Quarterly Review meeting", \
 "category": "appointment", "priority": "high", "summary": "Quarterly review with leadership team. \
 Prepare status updates.", "due_at": "2026-02-23T14:00:00Z", "ignore_reason": null, \
+"resolved": false, "resolution_reason": null, \
 "notify_at": ["2026-02-22T14:00:00Z", "2026-02-23T12:00:00Z"]}]}
 
 For ignored events: {"task_key": "ignore-daily-standup", "title": "Daily standup", \
 "category": "ignored", "priority": "low", "summary": null, "due_at": null, \
-"ignore_reason": "Routine recurring meeting", "notify_at": []}
+"ignore_reason": "Routine recurring meeting", "resolved": false, \
+"resolution_reason": null, "notify_at": []}
 
 task_key must be a short hyphenated slug.
 due_at must be ISO-8601 string or null.
-notify_at must be a JSON array of ISO-8601 UTC datetime strings (0–3 items)."""
+notify_at must be a JSON array of ISO-8601 UTC datetime strings (0–3 items).
+resolved must be a boolean. resolution_reason must be a string or null."""
 
 
 class LLMTask(BaseModel):
@@ -145,6 +185,8 @@ class LLMTask(BaseModel):
     summary: str | None = None
     due_at: str | None = None     # ISO-8601 string; parsed in task_engine
     ignore_reason: str | None = None
+    resolved: bool = False
+    resolution_reason: str | None = None
     notify_at: list[str] = []
 
 

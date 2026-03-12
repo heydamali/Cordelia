@@ -15,6 +15,22 @@ def send_push_notification(push_token: str, title: str, body: str, data: dict) -
     logger.info("PUSH [%s]: %s — %s | data=%s", push_token, title, body, data)
 
 
+def notify_task_completed(user: "User", task: "Task") -> None:
+    """Send a push notification when a task is auto-completed by the LLM."""
+    if not user.push_token:
+        return
+    send_push_notification(
+        push_token=user.push_token,
+        title="Task completed",
+        body=f"✓ {task.title}",
+        data={
+            "task_id": task.id,
+            "task_key": task.task_key,
+            "event": "auto_completed",
+        },
+    )
+
+
 def notify_task_reminder(user: "User", task: "Task", minutes_until_due: int | None) -> None:
     """Compose and dispatch a task reminder. No-op if user has no push_token."""
     if not user.push_token:

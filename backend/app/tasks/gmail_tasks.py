@@ -15,6 +15,8 @@ from app.database import SessionLocal
 from app.models.user import User
 from app.models.user_source_setting import UserSourceSetting
 from app.schemas.ingest import IngestMessageSchema, IngestRequestSchema
+from app.models.conversation import Conversation
+from app.models.task import Task as TaskModel
 from app.services.gmail_connector import (
     GmailConnector,
     GmailAuthError,
@@ -246,6 +248,57 @@ def process_gmail_notification(self, user_id: str, notification_history_id: str)
                         exc,
                     )
 
+        # SENT pass — reprocess threads where the user just sent a reply and
+        # has open tasks, so the LLM can detect if the task is now resolved.
+        try:
+            sent_result = connector.list_history(
+                start_history_id=history_id, label_id="SENT"
+            )
+            for record in sent_result.records:
+                for thread_id in record.thread_ids_added:
+                    if thread_id in seen_thread_ids:
+                        continue  # already processed in INBOX pass
+                    conv = (
+                        db.query(Conversation)
+                        .filter(
+                            Conversation.user_id == user_id,
+                            Conversation.source_id == thread_id,
+                        )
+                        .first()
+                    )
+                    if conv is None:
+                        continue  # no tracked conversation for this thread
+                    open_count = (
+                        db.query(TaskModel)
+                        .filter(
+                            TaskModel.conversation_id == conv.id,
+                            TaskModel.status.in_(["pending", "snoozed"]),
+                        )
+                        .count()
+                    )
+                    if open_count == 0:
+                        continue  # no open tasks — nothing to resolve
+                    seen_thread_ids.add(thread_id)
+                    try:
+                        thread = connector.get_thread(thread_id)
+                        payload = _build_ingest_payload(thread, user_id, user.email)
+                        ingest(db, payload)
+                        process_conversation_with_llm.delay(conv.id, user_id)
+                        logger.info(
+                            "SENT reprocess enqueued for thread %s user %s",
+                            thread_id, user_id,
+                        )
+                    except (GmailAuthError, GmailAPIError) as exc:
+                        logger.warning(
+                            "process_gmail_notification: SENT reprocess failed thread=%s: %s",
+                            thread_id, exc,
+                        )
+        except GmailAPIError as exc:
+            logger.warning(
+                "process_gmail_notification: SENT history fetch failed for user %s: %s",
+                user_id, exc,
+            )
+
         _set_history_id(gmail_setting, user, result.history_id)
         db.commit()
     finally:
@@ -281,7 +334,7 @@ def renew_all_watches() -> None:
         for user in users:
             try:
                 connector = GmailConnector(user=user)
-                reg = connector.register_watch(topic_name=settings.PUBSUB_TOPIC)
+                reg = connector.register_watch(topic_name=settings.PUBSUB_TOPIC, label_ids=["INBOX", "SENT"])
                 gmail_setting = settings_by_user.get(user.id)
                 _set_history_id(gmail_setting, user, reg.history_id)
                 watch_expiry = datetime.fromtimestamp(reg.expiration_ms / 1000, tz=timezone.utc)
@@ -301,7 +354,7 @@ def renew_all_watches() -> None:
 def _re_register_watch(user: User, db: Session, connector: GmailConnector) -> None:
     """Re-register a Gmail watch after historyId expiry."""
     try:
-        reg = connector.register_watch(topic_name=settings.PUBSUB_TOPIC)
+        reg = connector.register_watch(topic_name=settings.PUBSUB_TOPIC, label_ids=["INBOX", "SENT"])
         gmail_setting = _get_gmail_setting(db, user.id)
         _set_history_id(gmail_setting, user, reg.history_id)
         watch_expiry = datetime.fromtimestamp(reg.expiration_ms / 1000, tz=timezone.utc)

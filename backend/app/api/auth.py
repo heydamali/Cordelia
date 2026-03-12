@@ -123,7 +123,7 @@ def auth_google_callback(code: str, state: str | None = None, db: Session = Depe
     )
     try:
         connector = GmailConnector(user=user)
-        reg = connector.register_watch(topic_name=settings.PUBSUB_TOPIC)
+        reg = connector.register_watch(topic_name=settings.PUBSUB_TOPIC, label_ids=["INBOX", "SENT"])
         user.gmail_history_id = reg.history_id
         watch_expiry = datetime.fromtimestamp(reg.expiration_ms / 1000, tz=timezone.utc)
         user.gmail_watch_expiry = watch_expiry

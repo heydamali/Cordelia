@@ -15,6 +15,7 @@ from app.models.message import Message
 from app.schemas.ingest import IngestMessageSchema, IngestRequestSchema
 from app.services.gmail_connector import GmailAPIError, GmailAuthError, GmailConnector
 from app.services.ingest_service import ingest
+from app.services.notification_service import notify_task_completed
 
 if TYPE_CHECKING:
     from app.models.task import Task
@@ -56,7 +57,7 @@ def _refresh_from_source(conversation: Conversation, user: "User", db: Session) 
                     body_text=msg.body_plain,
                     body_html=msg.body_html,
                     sent_at=msg.date,
-                    is_from_user=False,
+                    is_from_user=msg.sender.email.lower() == user.email.lower(),
                     raw_metadata={"labels": msg.labels},
                 )
                 for msg in thread.messages
@@ -148,4 +149,5 @@ def check_and_sync_completion(task: "Task", user: "User", db: Session) -> bool:
         logger.info(
             "completion_check: auto-closed task %s (resolved via source check)", task.id
         )
+        notify_task_completed(user, task)
     return resolved
