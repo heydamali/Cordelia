@@ -27,7 +27,7 @@ function tabFetchArgs(tab: TabKey): { status: string; priority?: string } {
   return { status: 'pending', priority: tab };
 }
 
-export function useTasks(userId: string) {
+export function useTasks() {
   const [pools, setPools] = useState<Pools>(INITIAL_POOLS);
   const [tabLoading, setTabLoading] = useState(false);
   const [tabRefreshing, setTabRefreshing] = useState(false);
@@ -45,7 +45,7 @@ export function useTasks(userId: string) {
 
     try {
       const { status, priority } = tabFetchArgs(tab);
-      const result = await fetchTasks(userId, status, { limit: pageSize, offset: 0, priority });
+      const result = await fetchTasks(status, { limit: pageSize, offset: 0, priority });
       setPools(prev => ({
         ...prev,
         [tab]: {
@@ -61,7 +61,7 @@ export function useTasks(userId: string) {
       loadingRef.current.delete(key);
       setTabLoading(false);
     }
-  }, [userId]);
+  }, []);
 
   const loadMoreTab = useCallback(async (tab: TabKey, pageSize: number) => {
     const key = `more:${tab}`;
@@ -75,7 +75,7 @@ export function useTasks(userId: string) {
 
     try {
       const { status, priority } = tabFetchArgs(tab);
-      const result = await fetchTasks(userId, status, { limit: pageSize, offset: current.offset, priority });
+      const result = await fetchTasks(status, { limit: pageSize, offset: current.offset, priority });
       setPools(prev => {
         const prevTab = prev[tab];
         return {
@@ -94,7 +94,7 @@ export function useTasks(userId: string) {
       loadingRef.current.delete(key);
       setTabLoading(false);
     }
-  }, [userId, pools]);
+  }, [pools]);
 
   const loadMoreAll = useCallback(async (pageSize: number) => {
     const tabs: TabKey[] = ['high', 'medium', 'low', 'missed'];
@@ -109,7 +109,7 @@ export function useTasks(userId: string) {
     setPools(prev => ({ ...prev, [tab]: { ...EMPTY_TAB } }));
     try {
       const { status, priority } = tabFetchArgs(tab);
-      const result = await fetchTasks(userId, status, { limit: pageSize, offset: 0, priority });
+      const result = await fetchTasks(status, { limit: pageSize, offset: 0, priority });
       setPools(prev => ({
         ...prev,
         [tab]: {
@@ -124,7 +124,7 @@ export function useTasks(userId: string) {
     } finally {
       setTabRefreshing(false);
     }
-  }, [userId]);
+  }, []);
 
   const silentRefreshTab = useCallback(async (tab: TabKey, pageSize: number) => {
     const key = `silent:${tab}`;
@@ -132,7 +132,7 @@ export function useTasks(userId: string) {
     loadingRef.current.add(key);
     try {
       const { status, priority } = tabFetchArgs(tab);
-      const result = await fetchTasks(userId, status, { limit: pageSize, offset: 0, priority });
+      const result = await fetchTasks(status, { limit: pageSize, offset: 0, priority });
       setPools(prev => ({
         ...prev,
         [tab]: {
@@ -147,7 +147,7 @@ export function useTasks(userId: string) {
     } finally {
       loadingRef.current.delete(key);
     }
-  }, [userId]);
+  }, []);
 
   const updateTaskStatus = useCallback(
     async (taskId: string, body: UpdateTaskBody) => {
@@ -160,7 +160,7 @@ export function useTasks(userId: string) {
         return next;
       });
       try {
-        await updateTask(userId, taskId, body);
+        await updateTask(taskId, body);
       } catch (_e) {
         // On failure, mark pools as needing reload
         setPools(prev => {
@@ -172,7 +172,7 @@ export function useTasks(userId: string) {
         });
       }
     },
-    [userId],
+    [],
   );
 
   return {

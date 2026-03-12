@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import case
 from sqlalchemy.orm import Session
 
+from app.auth.jwt import get_current_user
 from app.database import get_db
 from app.models.task import Task
 from app.models.user import User
@@ -15,16 +16,9 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 _VALID_STATUSES = {"pending", "done", "snoozed", "ignored", "all", "expired", "missed"}
 
 
-def _get_user(user_id: str, db: Session) -> User:
-    user = db.query(User).filter(User.id == user_id).first()
-    if user is None:
-        raise HTTPException(status_code=404, detail="User not found")
-    return user
-
-
 @router.get("", response_model=TaskListResponseSchema)
 def list_tasks(
-    user_id: str = Query(..., description="The authenticated user's ID"),
+    user: User = Depends(get_current_user),
     status: str = Query("pending", description="Filter by status: pending/done/snoozed/ignored/expired/all"),
     category: str | None = Query(None, description="Filter by category, e.g. reply, appointment"),
     priority: str | None = Query(None, description="Filter by priority: high/medium/low"),
@@ -40,7 +34,7 @@ def list_tasks(
             detail=f"Invalid status {status!r}. Must be one of: {', '.join(sorted(_VALID_STATUSES))}",
         )
 
-    _get_user(user_id, db)
+    user_id = str(user.id)
 
     # Auto-transition past-due pending tasks inline so they never appear
     # in the active tabs with a stale "Past due" label.
@@ -109,13 +103,13 @@ def list_tasks(
 def update_task_status(
     task_id: str,
     body: TaskStatusUpdateSchema,
-    user_id: str = Query(..., description="The authenticated user's ID"),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Update the status of a task (ownership-checked)."""
     task = db.query(Task).filter(Task.id == task_id).first()
 
-    if task is None or task.user_id != user_id:
+    if task is None or str(task.user_id) != str(user.id):
         raise HTTPException(status_code=404, detail="Task not found")
 
     task.status = body.status

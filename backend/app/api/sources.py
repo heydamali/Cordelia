@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.auth.jwt import get_current_user
 from app.database import get_db
 from app.models.user import User
 from app.models.user_source_setting import UserSourceSetting
@@ -31,13 +32,11 @@ class SourceToggleIn(BaseModel):
 
 @router.get("", response_model=list[SourceSettingOut])
 def list_sources(
-    user_id: str = Query(...),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Return all source settings for a user, with display metadata."""
-    user = db.query(User).filter(User.id == user_id).first()
-    if user is None:
-        raise HTTPException(status_code=404, detail="User not found")
+    user_id = str(user.id)
 
     settings = (
         db.query(UserSourceSetting)
@@ -62,16 +61,14 @@ def list_sources(
 def toggle_source(
     source: str,
     body: SourceToggleIn,
-    user_id: str = Query(...),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Enable or disable a source for a user."""
     if source not in SOURCE_REGISTRY:
         raise HTTPException(status_code=400, detail=f"Unknown source: {source!r}")
 
-    user = db.query(User).filter(User.id == user_id).first()
-    if user is None:
-        raise HTTPException(status_code=404, detail="User not found")
+    user_id = str(user.id)
 
     setting = (
         db.query(UserSourceSetting)

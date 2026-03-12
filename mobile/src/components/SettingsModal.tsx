@@ -19,26 +19,25 @@ const SOURCE_ICONS: Record<string, string> = {
 interface Props {
   visible: boolean;
   onClose: () => void;
-  userId: string;
   onSignOut: () => void;
   onSourceToggled: () => void;
 }
 
-export function SettingsModal({ visible, onClose, userId, onSignOut, onSourceToggled }: Props) {
+export function SettingsModal({ visible, onClose, onSignOut, onSourceToggled }: Props) {
   const [sources, setSources] = useState<SourceSetting[]>([]);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await fetchSources(userId);
+      const data = await fetchSources();
       setSources(data);
     } catch {
       // silently fail — user can retry by reopening
     } finally {
       setLoading(false);
     }
-  }, [userId]);
+  }, []);
 
   useEffect(() => {
     if (visible) load();
@@ -50,7 +49,7 @@ export function SettingsModal({ visible, onClose, userId, onSignOut, onSourceTog
       prev.map(s => (s.source === source ? { ...s, enabled: newValue } : s)),
     );
     try {
-      await toggleSource(userId, source, newValue);
+      await toggleSource(source, newValue);
       onSourceToggled();
     } catch {
       // Revert on failure

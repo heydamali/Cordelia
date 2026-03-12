@@ -29,7 +29,6 @@ import { Task, TaskPriority, SourceSetting } from '../types/task';
 import { fetchSources } from '../api/client';
 
 interface Props {
-  userId: string;
   onSignOut: () => void;
 }
 
@@ -47,7 +46,7 @@ const TABS: { key: TabKey; label: string }[] = [
 const CARD_HEIGHT = 90;
 const UI_CHROME = 174; // header + filter row + safe area
 
-export function TaskListScreen({ userId, onSignOut }: Props) {
+export function TaskListScreen({ onSignOut }: Props) {
   const { height } = useWindowDimensions();
   const pageSize = Math.max(5, Math.ceil((height - UI_CHROME) / CARD_HEIGHT));
 
@@ -62,7 +61,7 @@ export function TaskListScreen({ userId, onSignOut }: Props) {
     refreshTab,
     silentRefreshTab,
     updateTaskStatus,
-  } = useTasks(userId);
+  } = useTasks();
 
   const { shouldShow, markShown, checkHint } = useSwipeHint();
 
@@ -75,8 +74,8 @@ export function TaskListScreen({ userId, onSignOut }: Props) {
   const allSourcesDisabled = sources.length > 0 && sources.every(s => !s.enabled);
 
   useEffect(() => {
-    fetchSources(userId).then(setSources).catch(() => {});
-  }, [userId]);
+    fetchSources().then(setSources).catch(() => {});
+  }, []);
   const pullHintPlayed = useRef(false);
   const pullHintY = useSharedValue(0);
   const arrowOpacity = useSharedValue(1);
@@ -218,13 +217,13 @@ export function TaskListScreen({ userId, onSignOut }: Props) {
   }, [activeTab, pageSize, refreshTab]);
 
   const handleSourceToggled = useCallback(() => {
-    fetchSources(userId).then(setSources).catch(() => {});
+    fetchSources().then(setSources).catch(() => {});
     // Reset all pools so tasks refresh with new source filter
     const poolTabs: PoolTabKey[] = ['high', 'medium', 'low', 'missed'];
     for (const tab of poolTabs) {
       refreshTab(tab, pageSize);
     }
-  }, [userId, refreshTab, pageSize]);
+  }, [refreshTab, pageSize]);
 
   const isMissedView = activeTab === 'missed';
 
@@ -340,7 +339,6 @@ export function TaskListScreen({ userId, onSignOut }: Props) {
       <SettingsModal
         visible={settingsVisible}
         onClose={() => setSettingsVisible(false)}
-        userId={userId}
         onSignOut={onSignOut}
         onSourceToggled={handleSourceToggled}
       />

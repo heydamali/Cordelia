@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 import sentry_sdk
 
+from app.auth.jwt import create_access_token
 from app.config import settings
 from app.database import get_db
 from app.models.user import User
@@ -164,12 +165,14 @@ def auth_google_callback(code: str, state: str | None = None, db: Session = Depe
         initial_calendar_sync.delay(user.id)
         logger.info("enqueued initial syncs for new user %s", user.id)
 
+    token = create_access_token(user_id=str(user.id), email=user.email)
+
     # Decode mobile redirect URI from state and redirect back to the app
     if state:
         try:
             padding = "=" * ((4 - len(state) % 4) % 4)
             app_redirect = base64.urlsafe_b64decode(state + padding).decode()
-            return RedirectResponse(url=f"{app_redirect}?{urlencode({'user_id': user.id, 'email': user.email})}")
+            return RedirectResponse(url=f"{app_redirect}?{urlencode({'user_id': user.id, 'email': user.email, 'token': token})}")
         except Exception:
             logger.warning("auth_google_callback: failed to decode state for redirect")
 
@@ -177,4 +180,5 @@ def auth_google_callback(code: str, state: str | None = None, db: Session = Depe
         "message": "Google OAuth successful",
         "user_id": user.id,
         "email": user.email,
+        "token": token,
     }

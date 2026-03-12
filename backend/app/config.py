@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     PUBSUB_VERIFICATION_TOKEN: str
     INGEST_API_KEY: str
     ANTHROPIC_API_KEY: str
+    JWT_SECRET_KEY: str = ""
+    JWT_EXPIRY_DAYS: int = 30
     SENTRY_DSN: str | None = None
 
 

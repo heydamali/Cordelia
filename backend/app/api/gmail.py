@@ -1,7 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.auth.jwt import get_current_user
 from app.models.user import User
 from app.schemas.gmail import ThreadListResponseSchema, ThreadDetailResponseSchema
 from app.services.gmail_connector import (
@@ -13,13 +12,6 @@ from app.services.gmail_connector import (
 router = APIRouter(prefix="/gmail", tags=["gmail"])
 
 
-def _get_user(user_id: str, db: Session) -> User:
-    user = db.query(User).filter(User.id == user_id).first()
-    if user is None:
-        raise HTTPException(status_code=404, detail="User not found")
-    return user
-
-
 def _get_connector(user: User) -> GmailConnector:
     try:
         return GmailConnector(user=user)
@@ -29,15 +21,12 @@ def _get_connector(user: User) -> GmailConnector:
 
 @router.get("/threads", response_model=ThreadListResponseSchema)
 def list_threads(
-    user_id: str = Query(..., description="The authenticated user's ID"),
+    user: User = Depends(get_current_user),
     max_results: int = Query(20, ge=1, le=100),
     page_token: str | None = Query(None),
     q: str | None = Query(None, description="Gmail search query, e.g. 'is:unread'"),
     label_ids: list[str] = Query(default=["INBOX"], description="Labels to filter by"),
-    db: Session = Depends(get_db),
 ):
-    """List threads from the user's inbox (paginated)."""
-    user = _get_user(user_id, db)
     connector = _get_connector(user)
     try:
         result = connector.list_threads(
@@ -64,11 +53,8 @@ def list_threads(
 @router.get("/threads/{thread_id}", response_model=ThreadDetailResponseSchema)
 def get_thread(
     thread_id: str,
-    user_id: str = Query(..., description="The authenticated user's ID"),
-    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    """Fetch a full thread by ID with all messages parsed."""
-    user = _get_user(user_id, db)
     connector = _get_connector(user)
     try:
         detail = connector.get_thread(thread_id)

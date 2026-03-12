@@ -15,7 +15,7 @@ export default function App() {
   useEffect(() => {
     if (user && registeredForRef.current !== user.userId) {
       registeredForRef.current = user.userId;
-      registerForPushNotifications(user.userId).catch(console.warn);
+      registerForPushNotifications().catch(console.warn);
     }
   }, [user]);
 
@@ -30,7 +30,7 @@ export default function App() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       {user ? (
-        <TaskListScreen userId={user.userId} onSignOut={signOut} />
+        <TaskListScreen onSignOut={signOut} />
       ) : (
         <LoginScreen onSignIn={signIn} signingIn={signingIn} error={error} />
       )}

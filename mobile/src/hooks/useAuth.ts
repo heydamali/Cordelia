@@ -12,6 +12,7 @@ const STORAGE_KEY = 'auth_user';
 export interface AuthUser {
   userId: string;
   email: string;
+  token: string;
 }
 
 export function useAuth() {
@@ -24,7 +25,13 @@ export function useAuth() {
   useEffect(() => {
     AsyncStorage.getItem(STORAGE_KEY)
       .then(raw => {
-        if (raw) setUser(JSON.parse(raw));
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          // Force re-login if stored session lacks a token (pre-JWT session)
+          if (parsed.token) {
+            setUser(parsed);
+          }
+        }
       })
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -54,13 +61,14 @@ export function useAuth() {
       const parsed = Linking.parse(result.url);
       const userId = parsed.queryParams?.user_id as string | undefined;
       const email = parsed.queryParams?.email as string | undefined;
+      const token = parsed.queryParams?.token as string | undefined;
 
-      if (!userId || !email) {
+      if (!userId || !email || !token) {
         setError('Sign-in failed: missing user data in response.');
         return;
       }
 
-      const authUser: AuthUser = { userId, email };
+      const authUser: AuthUser = { userId, email, token };
       await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(authUser));
       setUser(authUser);
     } catch (e) {
