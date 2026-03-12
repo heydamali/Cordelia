@@ -40,7 +40,7 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: 'high',   label: '🔴 High' },
   { key: 'medium', label: '🟠 Med' },
   { key: 'low',    label: '🟢 Low' },
-  { key: 'missed', label: '⚫ Missed' },
+  { key: 'missed', label: '⚫ Past Due' },
 ];
 
 const CARD_HEIGHT = 90;

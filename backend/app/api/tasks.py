@@ -65,7 +65,10 @@ def list_tasks(
 
     query = db.query(Task).filter(Task.user_id == user_id)
 
-    if status != "all":
+    if status == "missed":
+        # "Past Due" tab — includes both missed appointments and expired action tasks
+        query = query.filter(Task.status.in_(["missed", "expired"]))
+    elif status != "all":
         query = query.filter(Task.status == status)
 
     if category is not None:
