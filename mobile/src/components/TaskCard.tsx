@@ -1,5 +1,5 @@
 import React, { useRef, useEffect } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, type ViewStyle } from 'react-native';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -133,26 +133,47 @@ export function TaskCard({ task, onDone, onSnooze, onIgnore, showHint, onHintSho
       leftThreshold={60}
       rightThreshold={60}
     >
-      <Animated.View style={[styles.card, animStyle]}>
-        <View style={[styles.dot, { backgroundColor: PRIORITY_COLOR[task.priority] }]} />
-        <View style={styles.body}>
-          <Text style={styles.title} numberOfLines={2}>{task.title}</Text>
-          <View style={styles.meta}>
-            {task.source && SOURCE_ICON[task.source] && (
-              <Text style={styles.sourceIcon}>{SOURCE_ICON[task.source]}</Text>
-            )}
-            <Text style={styles.category}>{CATEGORY_LABEL[task.category]}</Text>
-            {due && (
-              <Text style={[styles.due, due.overdue && styles.overdue]}>
-                · {due.text}
-              </Text>
-            )}
+      <View>
+        {/* Hint backdrop: shows action buttons behind the card during the hint animation */}
+        {showHint && (
+          <View style={[StyleSheet.absoluteFill, styles.hintBackdrop]}>
+            <View style={styles.hintLeft}>
+              <Text style={styles.actionIcon}>✓</Text>
+              <Text style={styles.actionLabel}>Done</Text>
+            </View>
+            <View style={styles.hintRight}>
+              <View style={styles.hintSnooze}>
+                <Text style={styles.actionIcon}>💤</Text>
+                <Text style={styles.actionLabel}>Snooze</Text>
+              </View>
+              <View style={styles.hintIgnore}>
+                <Text style={styles.actionIcon}>✕</Text>
+                <Text style={styles.actionLabel}>Ignore</Text>
+              </View>
+            </View>
           </View>
-          {task.summary ? (
-            <Text style={styles.summary} numberOfLines={2}>{task.summary}</Text>
-          ) : null}
-        </View>
-      </Animated.View>
+        )}
+        <Animated.View style={[styles.card, animStyle]}>
+          <View style={[styles.dot, { backgroundColor: PRIORITY_COLOR[task.priority] }]} />
+          <View style={styles.body}>
+            <Text style={styles.title} numberOfLines={2}>{task.title}</Text>
+            <View style={styles.meta}>
+              {task.source && SOURCE_ICON[task.source] && (
+                <Text style={styles.sourceIcon}>{SOURCE_ICON[task.source]}</Text>
+              )}
+              <Text style={styles.category}>{CATEGORY_LABEL[task.category]}</Text>
+              {due && (
+                <Text style={[styles.due, due.overdue && styles.overdue]}>
+                  · {due.text}
+                </Text>
+              )}
+            </View>
+            {task.summary ? (
+              <Text style={styles.summary} numberOfLines={2}>{task.summary}</Text>
+            ) : null}
+          </View>
+        </Animated.View>
+      </View>
     </Swipeable>
   );
 }
@@ -257,5 +278,29 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#FFFFFF',
     marginTop: 2,
+  },
+  // Hint backdrop (visible behind card during hint animation)
+  hintBackdrop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'stretch',
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+  },
+  hintLeft: {
+    ...(ACTION_BASE as ViewStyle),
+    backgroundColor: '#34C759',
+  },
+  hintRight: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  hintSnooze: {
+    ...(ACTION_BASE as ViewStyle),
+    backgroundColor: '#FF9500',
+  },
+  hintIgnore: {
+    ...(ACTION_BASE as ViewStyle),
+    backgroundColor: '#8E8E93',
   },
 });

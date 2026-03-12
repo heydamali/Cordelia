@@ -105,6 +105,9 @@ def auth_google_callback(code: str, state: str | None = None, db: Session = Depe
     db.commit()
     db.refresh(user)
 
+    user.last_login = datetime.now(timezone.utc)
+    db.commit()
+
     # Ensure UserSourceSetting rows exist for both sources
     for source_key in ("gmail", "google_calendar"):
         existing_setting = (
