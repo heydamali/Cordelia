@@ -89,8 +89,7 @@ def list_tasks(
             .all()
         )
         enabled = [row[0] for row in enabled_sources]
-        if enabled:
-            query = query.filter(Task.source.in_(enabled))
+        query = query.filter(Task.source.in_(enabled))
 
     base_query = query.order_by(
         priority_rank,

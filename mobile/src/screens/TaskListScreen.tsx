@@ -25,7 +25,8 @@ import { useSwipeHint } from '../hooks/useSwipeHint';
 import { TaskCard } from '../components/TaskCard';
 import { SnoozeModal } from '../components/SnoozeModal';
 import { SettingsModal } from '../components/SettingsModal';
-import { Task, TaskPriority } from '../types/task';
+import { Task, TaskPriority, SourceSetting } from '../types/task';
+import { fetchSources } from '../api/client';
 
 interface Props {
   userId: string;
@@ -69,6 +70,13 @@ export function TaskListScreen({ userId, onSignOut }: Props) {
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [activeTab, setActiveTab] = useState<TabKey>('high');
   const [hasRefreshed, setHasRefreshed] = useState(false);
+  const [sources, setSources] = useState<SourceSetting[]>([]);
+
+  const allSourcesDisabled = sources.length > 0 && sources.every(s => !s.enabled);
+
+  useEffect(() => {
+    fetchSources(userId).then(setSources).catch(() => {});
+  }, [userId]);
   const pullHintPlayed = useRef(false);
   const pullHintY = useSharedValue(0);
   const arrowOpacity = useSharedValue(1);
@@ -210,12 +218,13 @@ export function TaskListScreen({ userId, onSignOut }: Props) {
   }, [activeTab, pageSize, refreshTab]);
 
   const handleSourceToggled = useCallback(() => {
+    fetchSources(userId).then(setSources).catch(() => {});
     // Reset all pools so tasks refresh with new source filter
     const poolTabs: PoolTabKey[] = ['high', 'medium', 'low', 'missed'];
     for (const tab of poolTabs) {
       refreshTab(tab, pageSize);
     }
-  }, [refreshTab, pageSize]);
+  }, [userId, refreshTab, pageSize]);
 
   const isMissedView = activeTab === 'missed';
 
@@ -290,7 +299,19 @@ export function TaskListScreen({ userId, onSignOut }: Props) {
           contentContainerStyle={visible.length === 0 ? styles.emptyWrap : styles.list}
           ListEmptyComponent={
             <View style={styles.empty}>
-              {!hasRefreshed && !isMissedView ? (
+              {allSourcesDisabled ? (
+                <>
+                  <Text style={styles.emptyEmoji}>⚙️</Text>
+                  <Text style={styles.emptyTitle}>No data sources enabled</Text>
+                  <Text style={styles.emptySub}>Enable at least one source to see your tasks.</Text>
+                  <TouchableOpacity
+                    style={styles.emptyAction}
+                    onPress={() => setSettingsVisible(true)}
+                  >
+                    <Text style={styles.emptyActionText}>Open Settings</Text>
+                  </TouchableOpacity>
+                </>
+              ) : !hasRefreshed && !isMissedView ? (
                 <>
                   <Animated.View style={[styles.arrowWrap, arrowAnimStyle]}>
                     <Text style={styles.pullArrow}>{'\u2193'}</Text>
@@ -301,8 +322,8 @@ export function TaskListScreen({ userId, onSignOut }: Props) {
               ) : (
                 <>
                   <Text style={styles.emptyEmoji}>{isMissedView ? '📅' : '✅'}</Text>
-                  <Text style={styles.emptyTitle}>{isMissedView ? 'Nothing missed' : 'All clear'}</Text>
-                  <Text style={styles.emptySub}>{isMissedView ? 'No missed appointments.' : 'No pending tasks right now.'}</Text>
+                  <Text style={styles.emptyTitle}>{isMissedView ? 'Nothing past due' : 'All clear'}</Text>
+                  <Text style={styles.emptySub}>{isMissedView ? 'No past due tasks.' : 'No pending tasks right now.'}</Text>
                 </>
               )}
             </View>
@@ -439,5 +460,17 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: '#8E8E93',
     textAlign: 'center',
+  },
+  emptyAction: {
+    marginTop: 20,
+    backgroundColor: '#007AFF',
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 28,
+  },
+  emptyActionText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#FFFFFF',
   },
 });

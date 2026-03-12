@@ -69,6 +69,43 @@ def resync_calendar(
     return {"status": "ok", "watch": watch_status, "sync": "enqueued"}
 
 
+@router.post("/backfill-reprocess", status_code=200)
+def backfill_reprocess(
+    x_api_key: str = Header(alias="X-API-Key"),
+    db: Session = Depends(get_db),
+):
+    """Reprocess all open conversations with the latest LLM logic and renew Gmail watches.
+
+    One-time admin endpoint. Protected by INGEST_API_KEY.
+    """
+    if x_api_key != settings.INGEST_API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid API key")
+
+    from app.models.conversation import Conversation
+    from app.models.task import Task
+    from app.tasks.llm_tasks import process_conversation_with_llm
+    from app.tasks.gmail_tasks import renew_all_watches
+
+    open_convs = (
+        db.query(Conversation.id, Conversation.user_id)
+        .join(Task, Task.conversation_id == Conversation.id)
+        .filter(Task.status.in_(["pending", "snoozed"]))
+        .distinct()
+        .all()
+    )
+
+    for conv_id, user_id in open_convs:
+        process_conversation_with_llm.delay(conv_id, user_id)
+
+    renew_all_watches.delay()
+
+    return {
+        "status": "ok",
+        "conversations_enqueued": len(open_convs),
+        "watch_renewal": "enqueued",
+    }
+
+
 @router.post("/push-token", status_code=200)
 def register_push_token(body: PushTokenUpdateSchema, db: Session = Depends(get_db)):
     """Register or update a device push token for APNs notifications."""
