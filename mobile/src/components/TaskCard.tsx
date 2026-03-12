@@ -33,7 +33,7 @@ const SOURCE_ICON: Record<string, string> = {
 function formatDue(dueAt: string | null, status?: string): { text: string; overdue: boolean } | null {
   if (!dueAt) return null;
   const diffMins = Math.round((new Date(dueAt).getTime() - Date.now()) / 60_000);
-  if (diffMins < 0)     return { text: status === 'missed' ? 'Missed' : 'Overdue', overdue: true };
+  if (diffMins < 0)     return { text: 'Past due', overdue: true };
   if (diffMins < 60)    return { text: `Due in ${diffMins}m`,                overdue: false };
   if (diffMins < 1440)  return { text: `Due in ${Math.round(diffMins / 60)}h`, overdue: false };
   return                       { text: `Due in ${Math.round(diffMins / 1440)}d`, overdue: false };

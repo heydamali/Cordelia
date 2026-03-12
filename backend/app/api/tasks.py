@@ -42,22 +42,24 @@ def list_tasks(
 
     _get_user(user_id, db)
 
-    # Auto-transition past-due appointment tasks to missed
+    # Auto-transition past-due pending tasks inline so they never appear
+    # in the active tabs with a stale "Past due" label.
+    # - appointment tasks → "missed" (user may still want to log/acknowledge)
+    # - all other categories → "expired"
     now = datetime.now(timezone.utc)
-    overdue_appts = (
+    overdue = (
         db.query(Task)
         .filter(
             Task.user_id == user_id,
             Task.status == "pending",
-            Task.category == "appointment",
             Task.due_at.isnot(None),
             Task.due_at < now,
         )
         .all()
     )
-    if overdue_appts:
-        for t in overdue_appts:
-            t.status = "missed"
+    if overdue:
+        for t in overdue:
+            t.status = "missed" if t.category == "appointment" else "expired"
             t.updated_at = now
         db.commit()
 
