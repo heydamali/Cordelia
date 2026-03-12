@@ -21,7 +21,7 @@ app = FastAPI(title="Delia API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://compassionate-expression-production.up.railway.app",
+        "https://api.usedelia.com",
     ],
     allow_credentials=True,
     allow_methods=["GET", "PATCH", "POST", "DELETE"],
