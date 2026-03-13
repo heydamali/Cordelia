@@ -52,19 +52,23 @@ def process_conversation_with_llm(self, conversation_id: str, user_id: str) -> N
         user_email = user.email if user else "unknown"
         user_name = user.name if user else None
 
-        # Pass all open task keys for this user so the LLM can deduplicate
-        # across sources (e.g. same event appearing in both email and calendar)
-        existing_task_keys = [
-            t.task_key
+        # Pass enriched task info so the LLM can deduplicate across sources
+        existing_tasks = [
+            {
+                "task_key": t.task_key,
+                "title": t.title,
+                "due_at": t.due_at.date().isoformat() if t.due_at else None,
+                "source": t.source,
+            }
             for t in db.query(Task).filter(
                 Task.user_id == user_id,
-                Task.status.in_(["pending", "snoozed"]),
+                Task.status.in_(["pending", "snoozed", "missed", "expired"]),
             ).all()
         ]
 
         try:
             llm_tasks, raw_text, usage = llm_processor.process_conversation(
-                conversation, messages, existing_task_keys,
+                conversation, messages, existing_tasks,
                 user_email=user_email, user_name=user_name,
             )
         except ValueError as exc:

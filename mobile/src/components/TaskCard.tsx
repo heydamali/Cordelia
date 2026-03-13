@@ -158,8 +158,12 @@ export function TaskCard({ task, onDone, onSnooze, onIgnore, showHint, onHintSho
           <View style={styles.body}>
             <Text style={styles.title} numberOfLines={2}>{task.title}</Text>
             <View style={styles.meta}>
-              {task.source && SOURCE_ICON[task.source] && (
-                <Text style={styles.sourceIcon}>{SOURCE_ICON[task.source]}</Text>
+              {(task.sources ?? [task.source]).map((s, i) =>
+                SOURCE_ICON[s] ? (
+                  <Text key={s} style={[styles.sourceIcon, i > 0 && { marginLeft: 1 }]}>
+                    {SOURCE_ICON[s]}
+                  </Text>
+                ) : null
               )}
               <Text style={styles.category}>{CATEGORY_LABEL[task.category]}</Text>
               {due && (

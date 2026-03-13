@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import anthropic
+
 from pydantic import BaseModel
 
 from app.config import settings
@@ -43,8 +44,11 @@ PRIORITY:
 - low: no deadline, informational action
 
 DEDUPLICATION:
-- You will receive EXISTING_TASK_KEYS — reuse these exact keys for tasks that match an existing task \
-(including tasks from other sources such as calendar events about the same thing)
+- You will receive EXISTING_TASKS with their keys, titles, due dates, and sources
+- Reuse the exact task_key of an existing task when the new email refers to the same real-world item \
+(e.g. a calendar invite and an email about the same meeting should share one task_key)
+- Match by meaning, not exact wording: "Attend Cisco Culture Chat" and "Appointment: Cisco call with Ryan" \
+are the same task if they refer to the same event/meeting
 - When reusing an existing task_key (follow-up), bump priority one level higher than what \
 you would otherwise assign (low→medium, medium→high). If already high, keep high.
 
@@ -121,8 +125,11 @@ RULES:
 - Cancelled events: create an "info" task notifying the user of the cancellation
 
 DEDUPLICATION:
-- You will receive EXISTING_TASK_KEYS — reuse these exact keys for tasks that match an \
-existing task (including tasks already created from related emails about the same event)
+- You will receive EXISTING_TASKS with their keys, titles, due dates, and sources
+- Reuse the exact task_key of an existing task when the calendar event refers to the same \
+real-world item as an existing task (e.g. an email thread and a calendar invite about the same meeting)
+- Match by meaning, not exact wording: "Reply to Ryan about Cisco Culture Chat" and \
+"Attend Cisco Culture Chat" are the same task if they refer to the same event
 
 TASK CONSOLIDATION:
 - Produce ONE task per event — do not create separate tasks for "attend" and "prepare" \
@@ -194,10 +201,22 @@ class LLMResponse(BaseModel):
     tasks: list[LLMTask]
 
 
+def _format_existing_tasks(existing_tasks: list[dict[str, Any]]) -> str:
+    """Format enriched task info for the LLM prompt."""
+    if not existing_tasks:
+        return "EXISTING_TASKS: none"
+    lines = ["EXISTING_TASKS:"]
+    for t in existing_tasks:
+        due = t.get("due_at") or "no deadline"
+        source = t.get("source", "unknown")
+        lines.append(f"- {t['task_key']}: \"{t['title']}\" (due: {due}, source: {source})")
+    return "\n".join(lines)
+
+
 def _build_email_prompt(
     conversation: Conversation,
     messages: list[Message],
-    existing_task_keys: list[str],
+    existing_tasks: list[dict[str, Any]],
     *,
     user_email: str = "unknown",
     user_name: str | None = None,
@@ -208,9 +227,7 @@ def _build_email_prompt(
     lines.append(f"USER_IDENTITY: {user_label}")
     lines.append(f"SUBJECT: {conversation.subject or '(no subject)'}")
     lines.append(f"SOURCE: {conversation.source}")
-    lines.append(
-        f"EXISTING_TASK_KEYS: {', '.join(existing_task_keys) if existing_task_keys else 'none'}"
-    )
+    lines.append(_format_existing_tasks(existing_tasks))
     lines.append("")
 
     for msg in messages:
@@ -237,7 +254,7 @@ def _build_email_prompt(
 def _build_calendar_prompt(
     conversation: Conversation,
     messages: list[Message],
-    existing_task_keys: list[str],
+    existing_tasks: list[dict[str, Any]],
     *,
     user_email: str = "unknown",
     user_name: str | None = None,
@@ -249,9 +266,7 @@ def _build_calendar_prompt(
     user_label = f"{user_name} <{user_email}>" if user_name else user_email
     lines.append(f"USER_IDENTITY: {user_label}")
     lines.append(f"EVENT_TITLE: {conversation.subject or '(no title)'}")
-    lines.append(
-        f"EXISTING_TASK_KEYS: {', '.join(existing_task_keys) if existing_task_keys else 'none'}"
-    )
+    lines.append(_format_existing_tasks(existing_tasks))
     lines.append("")
 
     for msg in messages:
@@ -273,18 +288,18 @@ def _build_calendar_prompt(
 def build_prompt(
     conversation: Conversation,
     messages: list[Message],
-    existing_task_keys: list[str],
+    existing_tasks: list[dict[str, Any]],
     *,
     user_email: str = "unknown",
     user_name: str | None = None,
 ) -> str:
     if conversation.source == "google_calendar":
         return _build_calendar_prompt(
-            conversation, messages, existing_task_keys,
+            conversation, messages, existing_tasks,
             user_email=user_email, user_name=user_name,
         )
     return _build_email_prompt(
-        conversation, messages, existing_task_keys,
+        conversation, messages, existing_tasks,
         user_email=user_email, user_name=user_name,
     )
 
@@ -319,7 +334,7 @@ def parse_llm_response(raw_text: str) -> LLMResponse:
 def process_conversation(
     conversation: Conversation,
     messages: list[Message],
-    existing_task_keys: list[str],
+    existing_tasks: list[dict[str, Any]],
     *,
     user_email: str = "unknown",
     user_name: str | None = None,
@@ -330,7 +345,7 @@ def process_conversation(
     """
     client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
     prompt = build_prompt(
-        conversation, messages, existing_task_keys,
+        conversation, messages, existing_tasks,
         user_email=user_email, user_name=user_name,
     )
 

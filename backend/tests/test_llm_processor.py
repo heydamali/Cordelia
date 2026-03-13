@@ -73,12 +73,18 @@ class TestBuildPrompt:
         prompt = build_prompt(conv, [], [])
         assert "SUBJECT: Meeting Tomorrow" in prompt
 
-    def test_existing_task_keys_included(self):
-        """EXISTING_TASK_KEYS are listed in the prompt."""
+    def test_existing_tasks_included(self):
+        """EXISTING_TASKS with titles and dates are listed in the prompt."""
         conv = _make_conversation()
-        prompt = build_prompt(conv, [], ["reply-alice", "schedule-meeting"])
+        existing_tasks = [
+            {"task_key": "reply-alice", "title": "Reply to Alice", "due_at": "2026-03-10", "source": "gmail"},
+            {"task_key": "schedule-meeting", "title": "Schedule meeting", "due_at": None, "source": "google_calendar"},
+        ]
+        prompt = build_prompt(conv, [], existing_tasks)
         assert "reply-alice" in prompt
+        assert "Reply to Alice" in prompt
         assert "schedule-meeting" in prompt
+        assert "Schedule meeting" in prompt
 
     def test_messages_appended(self):
         """Message body text appears in the prompt."""

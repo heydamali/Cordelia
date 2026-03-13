@@ -14,6 +14,98 @@ logger = logging.getLogger(__name__)
 
 _PRIORITY_RANK: dict[str, int] = {"high": 3, "medium": 2, "low": 1}
 
+# ── Fuzzy dedup helpers ──────────────────────────────────────────────────
+
+_STOP_WORDS = frozenset({
+    "attend", "rsvp", "for", "the", "a", "an", "to", "with", "about",
+    "at", "on", "in", "of", "and", "prepare", "appointment", "complete",
+    "join", "go", "session", "meeting", "event", "call",
+})
+
+
+def _tokenize(title: str) -> set[str]:
+    """Lowercase word tokens, excluding stop words and single chars."""
+    return {w for w in title.lower().split() if w not in _STOP_WORDS and len(w) > 1}
+
+
+def _jaccard(a: set[str], b: set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def _dates_close(d1: datetime | None, d2: datetime | None, hours: int = 48) -> bool:
+    if d1 is None and d2 is None:
+        return True
+    if d1 is None or d2 is None:
+        return False
+    return abs((d1 - d2).total_seconds()) < hours * 3600
+
+
+def _merge_summaries(existing: str | None, incoming: str | None) -> str | None:
+    """Combine two summaries, deduplicating identical lines."""
+    if not incoming:
+        return existing
+    if not existing:
+        return incoming
+    existing_lines = [l.strip() for l in existing.splitlines() if l.strip()]
+    incoming_lines = [l.strip() for l in incoming.splitlines() if l.strip()]
+    seen = set(existing_lines)
+    merged = list(existing_lines)
+    for line in incoming_lines:
+        # Strip leading bullet for comparison
+        clean = line.lstrip("•-– ").strip()
+        if clean and clean not in {l.lstrip("•-– ").strip() for l in seen}:
+            merged.append(line)
+            seen.add(line)
+    if len(merged) > 1:
+        # Format as bullet list if multiple lines
+        merged = [f"• {l.lstrip('•-– ').strip()}" for l in merged]
+    return "\n".join(merged)
+
+
+def _combine_sources(task_a_source: str, task_b_source: str,
+                     task_a_sources: list | None = None,
+                     task_b_sources: list | None = None) -> list[str]:
+    """Build a deduplicated sources list from two tasks."""
+    all_sources: list[str] = []
+    for s in (task_a_sources or [task_a_source]) + (task_b_sources or [task_b_source]):
+        if s not in all_sources:
+            all_sources.append(s)
+    return all_sources
+
+
+def _find_fuzzy_match(
+    llm_task: LLMTask,
+    parsed_due: datetime | None,
+    existing_tasks: dict[str, Task],
+) -> str | None:
+    """Return the task_key of a fuzzy-matched existing task, or None."""
+    new_tokens = _tokenize(llm_task.title)
+    action_cats = {"appointment", "action"}
+    for key, task in existing_tasks.items():
+        if key == llm_task.task_key:
+            continue  # exact match handled by normal path
+        if _jaccard(new_tokens, _tokenize(task.title)) < 0.4:
+            continue
+        if not _dates_close(parsed_due, task.due_at):
+            continue
+        cat_match = (
+            task.category == llm_task.category
+            or (task.category in action_cats and llm_task.category in action_cats)
+        )
+        if not cat_match:
+            continue
+        logger.info(
+            "task_engine: fuzzy dedup matched %r → existing %r (%s)",
+            llm_task.task_key, key, task.title,
+        )
+        return key
+    return None
+
+
+# ── Parsing ──────────────────────────────────────────────────────────────
+
 
 def _parse_due_at(due_at_str: str | None, *, reject_past: bool = False) -> datetime | None:
     if not due_at_str:
@@ -70,7 +162,7 @@ def upsert_tasks(
         for t in db.query(Task).filter(
             Task.user_id == user_id,
             Task.conversation_id != conversation_id,
-            Task.status.in_(["pending", "snoozed"]),
+            Task.status.in_(["pending", "snoozed", "missed", "expired"]),
         ).all()
     }
     # Conversation-specific tasks take precedence over cross-source matches
@@ -85,6 +177,14 @@ def upsert_tasks(
         # For email sources, reject due_at values that are already in the past
         # (the LLM likely misresolved a relative date like "this Thursday")
         reject_past = source == "gmail"
+        parsed_due = _parse_due_at(llm_task.due_at, reject_past=reject_past)
+
+        # Fuzzy dedup: if no exact key match, try title/date similarity
+        if existing is None and llm_task.category != "ignored":
+            fuzzy_key = _find_fuzzy_match(llm_task, parsed_due, existing_rows)
+            if fuzzy_key:
+                existing = existing_rows[fuzzy_key]
+                llm_task.task_key = fuzzy_key
 
         if existing is None:
             if llm_task.category == "ignored":
@@ -98,7 +198,7 @@ def upsert_tasks(
                 category=llm_task.category,
                 priority=llm_task.priority,
                 summary=llm_task.summary,
-                due_at=_parse_due_at(llm_task.due_at, reject_past=reject_past),
+                due_at=parsed_due,
                 status="pending",
                 ignore_reason=llm_task.ignore_reason,
                 llm_model=llm_model,
@@ -123,7 +223,7 @@ def upsert_tasks(
             results.append(existing)
 
         else:
-            # pending — check for LLM-detected resolution first
+            # pending / missed / expired — check for LLM-detected resolution first
             if llm_task.resolved:
                 existing.status = "done"
                 existing.llm_model = llm_model
@@ -135,9 +235,15 @@ def upsert_tasks(
 
             # UPDATE title, summary, due_at, notify_at; priority only bumps UP
             existing.title = llm_task.title
-            existing.summary = llm_task.summary
             # Preserve calendar-sourced due_at when email re-processes the same task
             is_cross_source = existing.source != source
+            if is_cross_source:
+                existing.summary = _merge_summaries(existing.summary, llm_task.summary)
+                existing.sources = _combine_sources(
+                    existing.source, source, existing.sources,
+                )
+            else:
+                existing.summary = llm_task.summary
             if is_cross_source and existing.source == "google_calendar" and existing.due_at:
                 pass  # calendar due_at is authoritative (based on event start time)
             else:
@@ -154,3 +260,41 @@ def upsert_tasks(
 
     db.commit()
     return results, auto_completed
+
+
+def merge_duplicate_tasks(db: Session, user_id: str) -> int:
+    """Find and merge duplicate tasks for a user. Returns count of merged tasks."""
+    open_tasks = db.query(Task).filter(
+        Task.user_id == user_id,
+        Task.status.in_(["pending", "snoozed", "missed", "expired"]),
+    ).all()
+
+    merged = 0
+    seen: dict[str, Task] = {}
+
+    # Sort: calendar tasks first (authoritative source), then by created_at
+    for task in sorted(open_tasks, key=lambda t: (t.source != "google_calendar", t.created_at)):
+        tokens = _tokenize(task.title)
+        matched_key = None
+        for key, existing in seen.items():
+            if _jaccard(tokens, _tokenize(existing.title)) >= 0.4 and _dates_close(task.due_at, existing.due_at):
+                matched_key = key
+                break
+        if matched_key:
+            survivor = seen[matched_key]
+            survivor.summary = _merge_summaries(survivor.summary, task.summary)
+            survivor.sources = _combine_sources(
+                survivor.source, task.source, survivor.sources, task.sources,
+            )
+            task.status = "done"
+            task.updated_at = datetime.now(timezone.utc)
+            merged += 1
+            logger.info(
+                "merge_duplicate_tasks: merged %r into %r for user %s",
+                task.task_key, matched_key, user_id,
+            )
+        else:
+            seen[task.task_key] = task
+
+    db.commit()
+    return merged

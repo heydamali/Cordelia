@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 
 class TaskSchema(BaseModel):
@@ -16,6 +16,7 @@ class TaskSchema(BaseModel):
     status: str
     ignore_reason: str | None
     source: str
+    sources: list[str] | None = None
     created_at: datetime
     updated_at: datetime
     snoozed_until: datetime | None
@@ -23,6 +24,12 @@ class TaskSchema(BaseModel):
     notifications_sent: list
 
     model_config = ConfigDict(from_attributes=True)
+
+    @model_validator(mode="after")
+    def _derive_sources(self):
+        if not self.sources:
+            self.sources = [self.source]
+        return self
 
 
 class TaskListResponseSchema(BaseModel):

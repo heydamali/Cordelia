@@ -89,7 +89,7 @@ def backfill_reprocess(
     open_convs = (
         db.query(Conversation.id, Conversation.user_id)
         .join(Task, Task.conversation_id == Conversation.id)
-        .filter(Task.status.in_(["pending", "snoozed"]))
+        .filter(Task.status.in_(["pending", "snoozed", "missed", "expired"]))
         .distinct()
         .all()
     )
@@ -104,6 +104,26 @@ def backfill_reprocess(
         "conversations_enqueued": len(open_convs),
         "watch_renewal": "enqueued",
     }
+
+
+@router.post("/merge-duplicates", status_code=200)
+def merge_duplicates(
+    x_api_key: str = Header(alias="X-API-Key"),
+    db: Session = Depends(get_db),
+):
+    """Find and merge duplicate tasks across all users.
+
+    One-time admin endpoint. Protected by INGEST_API_KEY.
+    """
+    if x_api_key != settings.INGEST_API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid API key")
+
+    from app.models.user import User
+    from app.services.task_engine import merge_duplicate_tasks
+
+    users = db.query(User).all()
+    total = sum(merge_duplicate_tasks(db, u.id) for u in users)
+    return {"status": "ok", "merged": total}
 
 
 @router.post("/push-token", status_code=200)

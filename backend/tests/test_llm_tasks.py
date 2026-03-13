@@ -25,9 +25,12 @@ def _make_message():
     return msg
 
 
-def _make_task_obj(task_key="reply-john"):
+def _make_task_obj(task_key="reply-john", title="Task", due_at=None, source="gmail"):
     t = MagicMock()
     t.task_key = task_key
+    t.title = title
+    t.due_at = due_at
+    t.source = source
     return t
 
 
@@ -79,7 +82,12 @@ class TestProcessConversationWithLLM:
 
         mock_llm_processor.process_conversation.assert_called_once()
         call_args, call_kwargs = mock_llm_processor.process_conversation.call_args
-        assert call_args == (conversation, [message], ["existing-key"])
+        assert call_args[0] is conversation
+        assert call_args[1] == [message]
+        # existing_tasks is now a list of dicts with enriched info
+        existing_tasks = call_args[2]
+        assert len(existing_tasks) == 1
+        assert existing_tasks[0]["task_key"] == "existing-key"
         assert "user_email" in call_kwargs
         assert "user_name" in call_kwargs
         mock_task_engine.upsert_tasks.assert_called_once()
@@ -223,8 +231,9 @@ class TestProcessConversationWithLLM:
         process_conversation_with_llm("conv-1", "user-1")
 
         call_args = mock_llm_processor.process_conversation.call_args[0]
-        existing_keys = call_args[2]
-        assert set(existing_keys) == {"reply-alice", "schedule-meeting"}
+        existing_tasks = call_args[2]
+        task_keys = {t["task_key"] for t in existing_tasks}
+        assert task_keys == {"reply-alice", "schedule-meeting"}
         db.close.assert_called_once()
 
     @patch("app.tasks.llm_tasks.task_engine")

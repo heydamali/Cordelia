@@ -16,6 +16,7 @@ export interface Task {
   status: TaskStatus;
   ignore_reason: string | null;
   source: TaskSource;
+  sources: TaskSource[];
   snoozed_until: string | null;
   notify_at: string[];
   notifications_sent: string[];
