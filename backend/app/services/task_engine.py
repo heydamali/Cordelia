@@ -15,13 +15,16 @@ logger = logging.getLogger(__name__)
 _PRIORITY_RANK: dict[str, int] = {"high": 3, "medium": 2, "low": 1}
 
 
-def _parse_due_at(due_at_str: str | None) -> datetime | None:
+def _parse_due_at(due_at_str: str | None, *, reject_past: bool = False) -> datetime | None:
     if not due_at_str:
         return None
     try:
         dt = dateutil_parser.parse(due_at_str)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
+        if reject_past and dt < datetime.now(timezone.utc):
+            logger.info("task_engine: discarding past due_at=%s", due_at_str)
+            return None
         return dt
     except (ValueError, OverflowError):
         logger.warning("task_engine: could not parse due_at=%r", due_at_str)
@@ -79,6 +82,10 @@ def upsert_tasks(
     for llm_task in llm_tasks:
         existing = existing_rows.get(llm_task.task_key)
 
+        # For email sources, reject due_at values that are already in the past
+        # (the LLM likely misresolved a relative date like "this Thursday")
+        reject_past = source == "gmail"
+
         if existing is None:
             if llm_task.category == "ignored":
                 continue  # never persist ignored tasks
@@ -91,7 +98,7 @@ def upsert_tasks(
                 category=llm_task.category,
                 priority=llm_task.priority,
                 summary=llm_task.summary,
-                due_at=_parse_due_at(llm_task.due_at),
+                due_at=_parse_due_at(llm_task.due_at, reject_past=reject_past),
                 status="pending",
                 ignore_reason=llm_task.ignore_reason,
                 llm_model=llm_model,
@@ -129,7 +136,12 @@ def upsert_tasks(
             # UPDATE title, summary, due_at, notify_at; priority only bumps UP
             existing.title = llm_task.title
             existing.summary = llm_task.summary
-            existing.due_at = _parse_due_at(llm_task.due_at)
+            # Preserve calendar-sourced due_at when email re-processes the same task
+            is_cross_source = existing.source != source
+            if is_cross_source and existing.source == "google_calendar" and existing.due_at:
+                pass  # calendar due_at is authoritative (based on event start time)
+            else:
+                existing.due_at = _parse_due_at(llm_task.due_at, reject_past=reject_past)
             existing.notify_at = llm_task.notify_at   # LLM may have better date info on re-run
             existing.llm_model = llm_model
             existing.raw_llm_output = raw_llm_output
