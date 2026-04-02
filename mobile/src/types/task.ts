@@ -2,7 +2,7 @@ export type TaskCategory = 'reply' | 'appointment' | 'action' | 'info' | 'ignore
 export type TaskPriority = 'high' | 'medium' | 'low';
 export type TaskStatus = 'pending' | 'done' | 'snoozed' | 'ignored' | 'expired' | 'missed';
 
-export type TaskSource = 'gmail' | 'google_calendar';
+export type TaskSource = 'gmail' | 'google_calendar' | 'whatsapp';
 
 export interface Task {
   id: string;
@@ -29,6 +29,8 @@ export interface SourceSetting {
   enabled: boolean;
   display_name: string;
   icon: string;
+  requires_linking?: boolean;
+  linked?: boolean;
 }
 
 export interface TaskListResponse {

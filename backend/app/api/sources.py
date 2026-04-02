@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,6 +17,7 @@ router = APIRouter(prefix="/sources", tags=["sources"])
 SOURCE_REGISTRY: dict[str, dict[str, str]] = {
     "gmail": {"display_name": "Gmail", "icon": "mail"},
     "google_calendar": {"display_name": "Google Calendar", "icon": "calendar"},
+    "whatsapp": {"display_name": "WhatsApp", "icon": "whatsapp"},
 }
 
 
@@ -24,6 +26,8 @@ class SourceSettingOut(BaseModel):
     enabled: bool
     display_name: str
     icon: str
+    requires_linking: bool = False
+    linked: bool = False
 
 
 class SourceToggleIn(BaseModel):
@@ -48,11 +52,21 @@ def list_sources(
     result: list[SourceSettingOut] = []
     for source_key, meta in SOURCE_REGISTRY.items():
         setting = settings_by_source.get(source_key)
+        requires_linking = source_key == "whatsapp"
+        linked = False
+        if requires_linking and setting and setting.sync_cursor:
+            try:
+                cursor = json.loads(setting.sync_cursor)
+                linked = bool(cursor.get("phone_number"))
+            except (json.JSONDecodeError, TypeError):
+                pass
         result.append(SourceSettingOut(
             source=source_key,
             enabled=setting.enabled if setting else False,
             display_name=meta["display_name"],
             icon=meta["icon"],
+            requires_linking=requires_linking,
+            linked=linked,
         ))
     return result
 

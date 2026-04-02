@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str
     JWT_SECRET_KEY: str = ""
     JWT_EXPIRY_DAYS: int = 30
+    WHATSAPP_SERVICE_URL: str = ""
+    WHATSAPP_SERVICE_API_KEY: str = ""
     SENTRY_DSN: str | None = None
 
 

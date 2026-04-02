@@ -93,3 +93,33 @@ export async function toggleSource(
   if (!res.ok) throw new Error(`toggleSource failed: ${res.status}`);
   return res.json();
 }
+
+// WhatsApp linking
+
+export async function startWhatsAppLink(
+  phoneNumber: string,
+): Promise<{ pairing_code: string; expires_in: number }> {
+  const res = await authFetch(`${BASE_URL}/whatsapp/link/start`, {
+    method: 'POST',
+    body: JSON.stringify({ phone_number: phoneNumber }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.detail || `startWhatsAppLink failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function getWhatsAppLinkStatus(): Promise<{
+  status: string;
+  phone_number?: string;
+}> {
+  const res = await authFetch(`${BASE_URL}/whatsapp/link/status`);
+  if (!res.ok) throw new Error(`getWhatsAppLinkStatus failed: ${res.status}`);
+  return res.json();
+}
+
+export async function unlinkWhatsApp(): Promise<void> {
+  const res = await authFetch(`${BASE_URL}/whatsapp/unlink`, { method: 'POST' });
+  if (!res.ok) throw new Error(`unlinkWhatsApp failed: ${res.status}`);
+}

@@ -8,12 +8,14 @@ import {
   StyleSheet,
   ActivityIndicator,
 } from 'react-native';
-import { fetchSources, toggleSource } from '../api/client';
+import { fetchSources, toggleSource, unlinkWhatsApp } from '../api/client';
 import { SourceSetting } from '../types/task';
+import { WhatsAppLinkModal } from './WhatsAppLinkModal';
 
 const SOURCE_ICONS: Record<string, string> = {
   mail: '\u2709',      // ✉
   calendar: '\uD83D\uDCC5', // 📅
+  whatsapp: '\uD83D\uDCAC', // 💬
 };
 
 interface Props {
@@ -26,6 +28,7 @@ interface Props {
 export function SettingsModal({ visible, onClose, onSignOut, onSourceToggled }: Props) {
   const [sources, setSources] = useState<SourceSetting[]>([]);
   const [loading, setLoading] = useState(true);
+  const [whatsappLinkVisible, setWhatsappLinkVisible] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -59,6 +62,16 @@ export function SettingsModal({ visible, onClose, onSignOut, onSourceToggled }: 
     }
   };
 
+  const handleUnlinkWhatsApp = async () => {
+    try {
+      await unlinkWhatsApp();
+      onSourceToggled();
+      load();
+    } catch {
+      // silently fail
+    }
+  };
+
   return (
     <Modal visible={visible} animationType="slide" transparent>
       <View style={styles.overlay}>
@@ -81,14 +94,43 @@ export function SettingsModal({ visible, onClose, onSignOut, onSourceToggled }: 
                   {SOURCE_ICONS[s.icon] || s.icon}
                 </Text>
                 <Text style={styles.sourceName}>{s.display_name}</Text>
-                <Switch
-                  value={s.enabled}
-                  onValueChange={(val) => handleToggle(s.source, val)}
-                  trackColor={{ true: '#007AFF', false: '#E5E5EA' }}
-                />
+                {s.requires_linking && !s.linked ? (
+                  <TouchableOpacity
+                    style={styles.linkBtn}
+                    onPress={() => setWhatsappLinkVisible(true)}
+                  >
+                    <Text style={styles.linkBtnText}>Link</Text>
+                  </TouchableOpacity>
+                ) : s.requires_linking && s.linked ? (
+                  <View style={styles.linkedRow}>
+                    <Switch
+                      value={s.enabled}
+                      onValueChange={(val) => handleToggle(s.source, val)}
+                      trackColor={{ true: '#007AFF', false: '#E5E5EA' }}
+                    />
+                    <TouchableOpacity onPress={handleUnlinkWhatsApp}>
+                      <Text style={styles.unlinkText}>Unlink</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <Switch
+                    value={s.enabled}
+                    onValueChange={(val) => handleToggle(s.source, val)}
+                    trackColor={{ true: '#007AFF', false: '#E5E5EA' }}
+                  />
+                )}
               </View>
             ))
           )}
+
+          <WhatsAppLinkModal
+            visible={whatsappLinkVisible}
+            onClose={() => {
+              setWhatsappLinkVisible(false);
+              load();
+              onSourceToggled();
+            }}
+          />
 
           <View style={styles.divider} />
 
@@ -155,6 +197,27 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 16,
     color: '#1C1C1E',
+  },
+  linkBtn: {
+    backgroundColor: '#25D366',
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  linkBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  linkedRow: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    gap: 12,
+  },
+  unlinkText: {
+    fontSize: 13,
+    color: '#FF3B30',
+    fontWeight: '500',
   },
   divider: {
     height: 1,

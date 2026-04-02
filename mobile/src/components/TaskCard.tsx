@@ -28,6 +28,7 @@ const CATEGORY_LABEL: Record<string, string> = {
 const SOURCE_ICON: Record<string, string> = {
   gmail:           '\u2709',      // ✉
   google_calendar: '\uD83D\uDCC5', // 📅
+  whatsapp:        '\uD83D\uDCAC', // 💬
 };
 
 function formatDue(dueAt: string | null, status?: string): { text: string; overdue: boolean } | null {
